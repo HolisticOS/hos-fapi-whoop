@@ -3,9 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 import structlog
 
 from app.config.settings import settings
+from app.config.database import init_database, close_database
 from app.api import internal, auth, health
 
-# Simple logging setup
+# Configure structured logging
 structlog.configure(
     processors=[
         structlog.stdlib.add_log_level,
@@ -18,35 +19,60 @@ structlog.configure(
 
 logger = structlog.get_logger(__name__)
 
-# Create FastAPI app
 app = FastAPI(
-    title="WHOOP MVP Microservice",
-    description="Simple WHOOP data integration service",
+    title=settings.PROJECT_NAME,
+    docs_url="/docs" if settings.is_development else None,
+    redoc_url="/redoc" if settings.is_development else None,
     version="1.0.0-mvp"
 )
 
-# Basic CORS
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict in production
+    allow_origins=["*"],  # Configure appropriately for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(internal.router, prefix="/internal")
-app.include_router(auth.router, prefix="/auth")
+# Include routers with API versioning
 app.include_router(health.router, prefix="/health")
+app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/whoop/auth", tags=["whoop-auth"])
+app.include_router(internal.router, prefix=settings.API_V1_STR, tags=["whoop-data"])
 
 @app.on_event("startup")
-async def startup():
-    logger.info("WHOOP MVP Microservice starting")
+async def startup_event():
+    """Initialize application on startup"""
+    logger.info("WHOOP Microservice starting", environment=settings.ENVIRONMENT)
+    
+    # Initialize database connection
+    db_success = await init_database()
+    if not db_success:
+        logger.error("Failed to initialize database connection")
+        raise Exception("Database initialization failed")
+    
+    logger.info("WHOOP Microservice started successfully")
 
 @app.on_event("shutdown")
-async def shutdown():
-    logger.info("WHOOP MVP Microservice stopping")
+async def shutdown_event():
+    """Clean up resources on shutdown"""
+    logger.info("WHOOP Microservice shutting down")
+    await close_database()
+    logger.info("WHOOP Microservice stopped")
+
+@app.get("/")
+async def root():
+    return {
+        "message": "WHOOP Health Metrics API",
+        "version": "1.0.0-mvp",
+        "docs": "/docs" if settings.is_development else None
+    }
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=settings.PORT)
+    uvicorn.run(
+        "app.main:app",
+        host=settings.API_HOST,
+        port=settings.API_PORT,
+        reload=settings.is_development
+    )

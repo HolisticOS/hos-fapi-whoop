@@ -1,25 +1,29 @@
 # Core Framework
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
+fastapi
+uvicorn[standard]
 
 # Database
-asyncpg==0.29.0
-databases==0.8.0
+supabase
+pydantic
 
 # HTTP Client
-httpx==0.25.2
+httpx
+aiohttp
 
 # Security & Auth
-python-jose[cryptography]==3.3.0
-python-multipart==0.0.6
+python-jose[cryptography]
+python-multipart
+gotrue
 
 # Environment
-python-dotenv==1.0.0
-pydantic-settings==2.1.0
+python-dotenv
+python-dateutil
+# Caching
+cachetools
 
 # Logging
-structlog==23.2.0
+structlog
 
 # Development/Testing
-pytest==7.4.3
-pytest-asyncio==0.21.1
+pytest
+pytest-asyncio
