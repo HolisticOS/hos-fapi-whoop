@@ -20,8 +20,11 @@ def _initialize_supabase():
         return None
     
     try:
-        supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
-        logger.info("Supabase client initialized successfully")
+        # Use service role key if available for better RLS permissions
+        api_key = getattr(settings, 'SUPABASE_SERVICE_KEY', None) or settings.SUPABASE_KEY
+        supabase = create_client(settings.SUPABASE_URL, api_key)
+        logger.info("Supabase client initialized successfully", 
+                   key_type="service_role" if hasattr(settings, 'SUPABASE_SERVICE_KEY') and settings.SUPABASE_SERVICE_KEY else "anon")
         return supabase
     except Exception as e:
         logger.error("Failed to initialize Supabase client", error=str(e))
@@ -36,14 +39,60 @@ def get_supabase_client() -> Client:
 
 async def init_database():
     """Initialize database connection and verify connectivity"""
+    if supabase is None:
+        logger.warning("Database connection skipped - running in development mode without Supabase")
+        return False
+    
     try:
-        # Test connection with a simple query
-        result = supabase.table("whoop_users").select("*").limit(1).execute()
+        # Check if WHOOP tables exist
+        required_tables = ["whoop_users", "whoop_oauth_tokens", "whoop_data", "whoop_sync_jobs"]
+        missing_tables = []
+        
+        for table_name in required_tables:
+            if not await table_exists(table_name):
+                missing_tables.append(table_name)
+        
+        if missing_tables:
+            logger.warning(
+                "Database tables missing - running in degraded mode", 
+                missing_tables=missing_tables,
+                migration_required=True
+            )
+            return False
+        
+        # Test connection to whoop_users table specifically
+        result = supabase.table("whoop_users").select("id").limit(1).execute()
         logger.info("Database connection established", table_count=len(result.data) if result.data else 0)
         return True
+        
     except Exception as e:
-        logger.error("Database connection failed", error=str(e))
+        error_str = str(e).lower()
+        if "pgrst205" in error_str or "does not exist" in error_str:
+            logger.warning(
+                "Database tables not found - application will run in degraded mode",
+                error=str(e),
+                solution="Run SQL migration script: /migrations/001_create_whoop_tables.sql"
+            )
+            return False
+        else:
+            logger.error("Database connection failed", error=str(e))
+            return False
+
+async def table_exists(table_name: str) -> bool:
+    """Check if a table exists in the database"""
+    if supabase is None:
         return False
+        
+    try:
+        # Try to query the table with limit 0 (no data, just structure check)
+        supabase.table(table_name).select("*").limit(0).execute()
+        return True
+    except Exception as e:
+        error_str = str(e).lower()
+        if "pgrst205" in error_str or "does not exist" in error_str or "42p01" in error_str:
+            return False
+        # Re-raise unexpected errors
+        raise e
 
 async def close_database():
     """Close database connection"""

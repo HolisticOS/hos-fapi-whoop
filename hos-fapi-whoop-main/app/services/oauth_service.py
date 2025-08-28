@@ -32,21 +32,58 @@ class WhoopOAuthService:
         self.token_url = "https://api.prod.whoop.com/oauth/oauth2/token"
         self.revoke_url = "https://api.prod.whoop.com/oauth/oauth2/revoke"
         
-        # Default scopes for comprehensive health data access
+        # Default scopes matching your WHOOP app configuration
         self.default_scopes = [
-            "offline",           # Required for refresh tokens
-            "read:profile",      # User profile access
-            "read:cycles",       # Cycle and recovery data
-            "read:recovery",     # Detailed recovery metrics
-            "read:sleep",        # Sleep data access
-            "read:workouts"      # Workout and strain data
+            "read:profile",         # User profile access
+            "read:cycles",          # Cycle and recovery data  
+            "read:recovery",        # Detailed recovery metrics
+            "read:sleep",           # Sleep data access
+            "read:workout",         # Workout and strain data
+            "read:body_measurement" # Body measurements (height, weight, max HR)
         ]
         
         self.user_repo = WhoopUserRepository()
         
-        logger.info("🔐 WHOOP OAuth service initialized", 
+        # Simple in-memory storage for PKCE verifiers (MVP approach)
+        # In production, use Redis or database with TTL
+        # IMPORTANT: Make this global so it persists across FastAPI request instances
+        if not hasattr(WhoopOAuthService, '_global_pkce_storage'):
+            WhoopOAuthService._global_pkce_storage = {}
+        self._pkce_storage = WhoopOAuthService._global_pkce_storage
+        
+        logger.info("WHOOP OAuth service initialized", 
                    client_id=self.client_id[:8] + "...",
                    scopes=self.default_scopes)
+    
+    async def _fetch_user_profile(self, access_token: str) -> Optional[Dict[str, Any]]:
+        """Fetch user profile from WHOOP API to get real user ID"""
+        try:
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            }
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    "https://api.prod.whoop.com/developer/v1/user/profile/basic",
+                    headers=headers,
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    profile_data = response.json()
+                    logger.info("✅ User profile fetched successfully", 
+                               whoop_user_id=profile_data.get('user_id'))
+                    return profile_data
+                else:
+                    logger.warning("⚠️ Failed to fetch user profile", 
+                                 status=response.status_code,
+                                 response=response.text)
+                    return None
+                    
+        except Exception as e:
+            logger.error("❌ Error fetching user profile", error=str(e))
+            return None
     
     def _generate_pkce_pair(self) -> tuple[str, str]:
         """Generate PKCE code verifier and challenge"""
@@ -136,9 +173,17 @@ class WhoopOAuthService:
             
             auth_url = f"{self.auth_url}?" + urllib.parse.urlencode(auth_params)
             
+            # Store PKCE verifier for callback validation
+            self._pkce_storage[state] = {
+                'verifier': code_verifier,
+                'user_id': user_id,
+                'timestamp': datetime.utcnow()
+            }
+            
             logger.info("🔐 OAuth flow initiated", 
                        user_id=user_id,
                        scopes=scopes,
+                       verifier_stored=True,
                        redirect_uri=self.redirect_uri)
             
             return OAuthAuthorizationResponse(
@@ -178,15 +223,36 @@ class WhoopOAuthService:
                            received_user=received_user_id)
                 return None
             
-            # For MVP, regenerate PKCE verifier (in production, retrieve from storage)
-            # This is a simplified approach - production should store verifier securely
-            code_verifier, _ = self._generate_pkce_pair()
+            # Retrieve stored PKCE verifier
+            pkce_data = self._pkce_storage.get(state)
+            if not pkce_data:
+                logger.error("❌ PKCE verifier not found for state", state=state)
+                return None
+                
+            code_verifier = pkce_data['verifier']
+            
+            # Clean up stored verifier (one-time use)
+            del self._pkce_storage[state]
+            
+            logger.info("✅ Retrieved PKCE verifier for token exchange", user_id=user_id)
             
             # Exchange authorization code for tokens
             token_data = await self._exchange_code_for_tokens(code, code_verifier)
             if not token_data:
                 logger.error("❌ Failed to exchange code for tokens", user_id=user_id)
                 return None
+                
+            # Fetch user profile to get real whoop_user_id
+            access_token = token_data['access_token']
+            profile_data = await self._fetch_user_profile(access_token)
+            
+            # Convert whoop_user_id to string (WHOOP returns integer)
+            if profile_data and 'user_id' in profile_data:
+                real_whoop_user_id = str(profile_data['user_id'])
+                logger.info("✅ Real WHOOP user ID retrieved", whoop_user_id=real_whoop_user_id)
+            else:
+                real_whoop_user_id = f"pending_{user_id}"
+                logger.warning("⚠️ Using temporary whoop_user_id", whoop_user_id=real_whoop_user_id)
             
             # Calculate token expiry
             expires_in = token_data.get('expires_in', 3600)  # Default 1 hour
@@ -215,12 +281,14 @@ class WhoopOAuthService:
                 # Create new user connection
                 user_data = WhoopUser(
                     user_id=user_id,
-                    whoop_user_id=None,  # Will be populated from profile API
+                    whoop_user_id=real_whoop_user_id,
                     access_token=token_data['access_token'],
                     refresh_token=token_data.get('refresh_token', ''),
-                    token_expires_at=expires_at,
+                    token_expires_at=expires_at,  # Pydantic should handle datetime
                     scopes=token_data.get('scope', ' '.join(self.default_scopes)),
-                    is_active=True
+                    is_active=True,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow()
                 )
                 
                 created_user = await self.user_repo.create_user(user_data)
@@ -354,18 +422,62 @@ class WhoopOAuthService:
             if not user or not user.access_token or not user.is_active:
                 return False
             
-            # Check if token is expired (with 5-minute buffer)
+            # Proper token validation
             if user.token_expires_at:
-                buffer_time = datetime.utcnow() + timedelta(minutes=5)
-                if user.token_expires_at <= buffer_time:
-                    logger.info("🔐 Token expired", user_id=user_id, 
-                               expires_at=user.token_expires_at)
+                from datetime import timezone
+                
+                # Get current time in UTC
+                current_utc = datetime.now(timezone.utc)
+                
+                # Handle token expiration time
+                expires_at = user.token_expires_at
+                
+                # If it's a string, parse it properly
+                if isinstance(expires_at, str):
+                    try:
+                        # Handle various string formats
+                        if expires_at.endswith('Z'):
+                            expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                        elif '+00:00' in expires_at:
+                            expires_at = datetime.fromisoformat(expires_at)
+                        elif '+00' in expires_at:
+                            # Handle "+00" format by converting to "+00:00"
+                            expires_at = expires_at.replace('+00', '+00:00')
+                            expires_at = datetime.fromisoformat(expires_at)
+                        elif '+' in expires_at:
+                            expires_at = datetime.fromisoformat(expires_at)
+                        else:
+                            # Assume naive UTC time
+                            expires_at = datetime.fromisoformat(expires_at)
+                            expires_at = expires_at.replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        logger.error("Failed to parse token expiration time", expires_str=str(expires_at))
+                        return False
+                elif isinstance(expires_at, datetime):
+                    # If it's already a datetime object
+                    if expires_at.tzinfo is None:
+                        # If naive datetime, assume UTC
+                        expires_at = expires_at.replace(tzinfo=timezone.utc)
+                
+                # Simple comparison: is token still valid?
+                if current_utc < expires_at:
+                    logger.debug("Token is valid", 
+                               user_id=user_id,
+                               expires_at=expires_at,
+                               current_utc=current_utc)
+                    return True
+                else:
+                    logger.info("Token has expired", 
+                               user_id=user_id,
+                               expires_at=expires_at,
+                               current_utc=current_utc)
                     return False
             
+            # No expiration time, assume valid
             return True
             
         except Exception as e:
-            logger.error("❌ Token validation failed", user_id=user_id, error=str(e))
+            logger.error("Token validation failed", user_id=user_id, error=str(e))
             return False
     
     async def get_valid_access_token(self, user_id: str) -> Optional[str]:

@@ -35,7 +35,7 @@ class RateLimitManager:
         # Request delay between calls
         self.request_delay = settings.WHOOP_RATE_LIMIT_DELAY  # 0.6 seconds
         
-        logger.info("📊 Rate limit manager initialized", 
+        logger.info("Rate limit manager initialized", 
                    minute_limit=self.minute_limit,
                    daily_limit=self.daily_limit,
                    request_delay=self.request_delay)
@@ -116,7 +116,7 @@ class WhoopAPIClient:
         self.retry_base_delay = settings.WHOOP_RETRY_BASE_DELAY
         self.request_timeout = settings.WHOOP_REQUEST_TIMEOUT
         
-        logger.info("🏃‍♂️ WHOOP API client initialized", 
+        logger.info("WHOOP API client initialized", 
                    base_url=self.base_url,
                    max_retries=self.max_retries,
                    timeout=self.request_timeout)
@@ -148,13 +148,13 @@ class WhoopAPIClient:
         if cache_key and not bypass_cache:
             cached_response = self.cache.get(cache_key)
             if cached_response:
-                logger.info("📦 Cache hit", cache_key=cache_key, user_id=user_id)
+                logger.info("Cache hit", cache_key=cache_key, user_id=user_id)
                 return cached_response
         
         # Get valid access token
         access_token = await self.oauth_service.get_valid_access_token(user_id)
         if not access_token:
-            logger.error("❌ No valid access token available", user_id=user_id)
+            logger.error("No valid access token available", user_id=user_id)
             return None
         
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
@@ -168,12 +168,12 @@ class WhoopAPIClient:
             try:
                 # Acquire rate limiting permit
                 if not await self.rate_limiter.acquire_permit():
-                    logger.error("❌ Rate limit exceeded, request blocked", 
+                    logger.error("Rate limit exceeded, request blocked", 
                                user_id=user_id, endpoint=endpoint)
                     return None
                 
                 async with httpx.AsyncClient() as client:
-                    logger.info(f"🌐 Making {method} request", 
+                    logger.info(f"Making {method} request", 
                                endpoint=endpoint, 
                                attempt=attempt + 1,
                                user_id=user_id)
@@ -193,9 +193,9 @@ class WhoopAPIClient:
                         # Cache successful response
                         if cache_key:
                             self.cache[cache_key] = data
-                            logger.info("💾 Response cached", cache_key=cache_key)
+                            logger.info("Response cached", cache_key=cache_key)
                         
-                        logger.info("✅ API request successful", 
+                        logger.info("API request successful", 
                                    endpoint=endpoint,
                                    user_id=user_id,
                                    response_size=len(str(data)))
@@ -203,7 +203,7 @@ class WhoopAPIClient:
                     
                     elif response.status_code == 401:
                         # Unauthorized - token may be invalid
-                        logger.warning("🔑 Unauthorized response, attempting token refresh", 
+                        logger.warning("Unauthorized response, attempting token refresh", 
                                      user_id=user_id)
                         
                         # Try token refresh once
@@ -214,7 +214,7 @@ class WhoopAPIClient:
                                 headers['Authorization'] = f'Bearer {access_token}'
                                 continue  # Retry with new token
                         
-                        logger.error("❌ Authentication failed after refresh attempt", 
+                        logger.error("Authentication failed after refresh attempt", 
                                    user_id=user_id)
                         return None
                     
@@ -223,7 +223,7 @@ class WhoopAPIClient:
                         retry_after = response.headers.get('Retry-After', '60')
                         retry_delay = int(retry_after)
                         
-                        logger.warning("⏱️ Rate limited by WHOOP API", 
+                        logger.warning("Rate limited by WHOOP API", 
                                      retry_after=retry_delay,
                                      user_id=user_id)
                         
@@ -231,13 +231,13 @@ class WhoopAPIClient:
                             await asyncio.sleep(retry_delay)
                             continue
                         else:
-                            logger.error("❌ Max retries exceeded for rate limiting", 
+                            logger.error("Max retries exceeded for rate limiting", 
                                        user_id=user_id)
                             return None
                     
                     elif 400 <= response.status_code < 500:
                         # Client error - don't retry
-                        logger.error("❌ Client error from WHOOP API", 
+                        logger.error("Client error from WHOOP API", 
                                    status_code=response.status_code,
                                    response=response.text,
                                    user_id=user_id)
@@ -247,20 +247,20 @@ class WhoopAPIClient:
                         # Server error - retry with backoff
                         if attempt < self.max_retries:
                             delay = self.retry_base_delay * (2 ** attempt)  # Exponential backoff
-                            logger.warning("⚠️ Server error, retrying", 
+                            logger.warning("Server error, retrying", 
                                          status_code=response.status_code,
                                          delay=delay,
                                          attempt=attempt + 1)
                             await asyncio.sleep(delay)
                             continue
                         else:
-                            logger.error("❌ Server error, max retries exceeded", 
+                            logger.error("Server error, max retries exceeded", 
                                        status_code=response.status_code,
                                        user_id=user_id)
                             return None
                     
             except httpx.TimeoutException:
-                logger.warning("⏰ Request timeout", 
+                logger.warning("Request timeout", 
                              endpoint=endpoint,
                              attempt=attempt + 1,
                              user_id=user_id)
@@ -270,11 +270,11 @@ class WhoopAPIClient:
                     await asyncio.sleep(delay)
                     continue
                 else:
-                    logger.error("❌ Request timeout, max retries exceeded", user_id=user_id)
+                    logger.error("Request timeout, max retries exceeded", user_id=user_id)
                     return None
                     
             except Exception as e:
-                logger.error("❌ Unexpected error in API request", 
+                logger.error("Unexpected error in API request", 
                            endpoint=endpoint,
                            user_id=user_id,
                            error=str(e),

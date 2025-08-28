@@ -8,6 +8,7 @@ class Settings:
     # Database Configuration
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
+    SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
     
     # API Configuration
     API_HOST: str = os.getenv("API_HOST", "0.0.0.0")

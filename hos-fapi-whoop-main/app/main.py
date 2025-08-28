@@ -45,11 +45,13 @@ async def startup_event():
     """Initialize application on startup"""
     logger.info("WHOOP Microservice starting", environment=settings.ENVIRONMENT)
     
-    # Initialize database connection
+    # Initialize database connection with graceful handling
     db_success = await init_database()
     if not db_success:
-        logger.error("Failed to initialize database connection")
-        raise Exception("Database initialization failed")
+        logger.warning("Database initialization incomplete - running in degraded mode")
+        logger.info("To fix: Run the SQL migration script in /migrations/001_create_whoop_tables.sql")
+    else:
+        logger.info("Database initialized successfully")
     
     logger.info("WHOOP Microservice started successfully")
 

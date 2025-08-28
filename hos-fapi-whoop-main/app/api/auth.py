@@ -295,20 +295,20 @@ async def get_oauth_configuration():
             "client_id": settings.WHOOP_CLIENT_ID,
             "redirect_uri": settings.WHOOP_REDIRECT_URL,
             "default_scopes": [
-                "offline",
                 "read:profile",
                 "read:cycles", 
                 "read:recovery",
                 "read:sleep",
-                "read:workouts"
+                "read:workout",
+                "read:body_measurement"
             ],
             "available_scopes": [
-                "offline",
                 "read:profile",
                 "read:cycles",
                 "read:recovery", 
                 "read:sleep",
-                "read:workouts"
+                "read:workout",
+                "read:body_measurement"
             ],
             "pkce_supported": True,
             "pkce_required": True,

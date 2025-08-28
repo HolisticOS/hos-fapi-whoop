@@ -28,9 +28,13 @@ class WhoopUserRepository:
     async def create_user(self, user_data: WhoopUser) -> Optional[WhoopUser]:
         """Create new WHOOP user connection"""
         try:
-            result = self.supabase.table(self.table_name).insert(
-                user_data.model_dump(exclude_none=True)
-            ).execute()
+            # Convert datetime objects to ISO strings for JSON serialization
+            user_dict = user_data.model_dump(exclude_none=True)
+            for key, value in user_dict.items():
+                if isinstance(value, datetime):
+                    user_dict[key] = value.isoformat()
+            
+            result = self.supabase.table(self.table_name).insert(user_dict).execute()
             
             if result.data:
                 logger.info("✅ WHOOP user created", user_id=user_data.user_id)
@@ -46,7 +50,7 @@ class WhoopUserRepository:
         """Get WHOOP user by internal user_id"""
         try:
             result = self.supabase.table(self.table_name).select("*").eq(
-                "user_id", user_id
+                "user_id", user_id  # Fixed: use internal user_id, not whoop_user_id
             ).execute()
             
             if result.data:
@@ -64,9 +68,9 @@ class WhoopUserRepository:
             result = self.supabase.table(self.table_name).update({
                 "access_token": access_token,
                 "refresh_token": refresh_token,
-                "token_expires_at": expires_at.isoformat(),
+                "token_expires_at": expires_at.isoformat() if expires_at else None,
                 "updated_at": datetime.utcnow().isoformat()
-            }).eq("user_id", user_id).execute()
+            }).eq("user_id", user_id).execute()  # Fixed: use internal user_id
             
             logger.info("✅ WHOOP user tokens updated", user_id=user_id)
             return bool(result.data)
@@ -84,7 +88,7 @@ class WhoopUserRepository:
                 "access_token": None,
                 "refresh_token": None,
                 "updated_at": datetime.utcnow().isoformat()
-            }).eq("user_id", user_id).execute()
+            }).eq("user_id", user_id).execute()  # Fixed: use internal user_id
             
             logger.info("✅ WHOOP user deactivated", user_id=user_id)
             return bool(result.data)
