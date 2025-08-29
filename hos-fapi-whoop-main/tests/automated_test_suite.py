@@ -33,8 +33,10 @@ import structlog
 
 # Import application components
 from app.main import app
-from app.services.oauth_service import WhoopOAuthService
-from app.services.whoop_api_client import WhoopAPIClient, RateLimitManager
+# OAuth service removed in v2-only cleanup
+# from app.services.oauth_service import WhoopOAuthService
+# from app.services.whoop_api_client import WhoopAPIClient, RateLimitManager
+from app.services.whoop_service import WhoopAPIService
 from app.models.database import WhoopDataService
 from app.models.schemas import (
     WhoopUser, WhoopRecoveryRecord, WhoopSleepRecord, WhoopWorkoutRecord,

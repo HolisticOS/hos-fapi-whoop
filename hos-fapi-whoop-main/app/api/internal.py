@@ -8,17 +8,17 @@ from typing import Optional, List
 from datetime import date, datetime, timedelta
 import structlog
 
-from app.services.whoop_api_client import WhoopAPIClient
-from app.services.oauth_service import WhoopOAuthService
+from app.services.whoop_service import WhoopAPIService
+# OAuth service removed in v2-only cleanup
 from app.models.database import WhoopDataService
-from app.models.schemas import HealthMetricsRequest, HealthMetricsResponse
+# Import models as needed from app.models.schemas
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 # Initialize services
-whoop_client = WhoopAPIClient()
-oauth_service = WhoopOAuthService()
+whoop_client = WhoopAPIService()
+# OAuth service removed in v2-only cleanup
 data_service = WhoopDataService()
 
 
@@ -423,14 +423,80 @@ async def sync_user_data(
             "results": {}
         }
         
-        # TODO: Implement actual data sync to database
-        # This would involve parsing whoop_data and storing to database
-        # using the repository classes from database.py
+        # Implement v2 database storage
+        from app.services.whoop_service import whoop_service
+        from app.models.database import WhoopDataService
         
-        # For now, return the fetched data structure
+        # Initialize services
+        data_service = WhoopDataService()
+        
+        # Calculate date range for API
+        end_date = datetime.now(timezone.utc)
+        start_date = end_date - timedelta(days=days_back)
+        start_iso = start_date.isoformat()
+        end_iso = end_date.isoformat()
+        
+        logger.info("🔄 Starting API data sync", 
+                   user_id=user_id,
+                   start_date=start_iso,
+                   end_date=end_iso)
+        
+        # Fetch comprehensive data using API
+        data_response = await whoop_service.get_comprehensive_data(
+            user_id=user_id,
+            days_back=days_back,
+            include_all_pages=True  # Get all paginated data
+        )
+        
+        # Store v2 data in database
+        storage_results = await data_service.store_comprehensive_data(
+            user_id=user_id,
+            response=data_response
+        )
+        
+        # Update sync results with v2 data and storage info
+        sync_results.update({
+            "api_version": "v2",  # Using API with UUID identifiers
+            "storage_results": storage_results,
+            "data_summary": {
+                "sleep_records": len(data_response.sleep_data),
+                "workout_records": len(data_response.workout_data), 
+                "recovery_records": len(data_response.recovery_data),
+                "total_records": data_response.total_records
+            },
+            "storage_summary": {
+                "sleep_stored": storage_results["sleep"]["stored"],
+                "workouts_stored": storage_results["workouts"]["stored"],
+                "recovery_stored": storage_results["recovery"]["stored"],
+                "total_stored": (
+                    storage_results["sleep"]["stored"] + 
+                    storage_results["workouts"]["stored"] + 
+                    storage_results["recovery"]["stored"]
+                ),
+                "total_errors": (
+                    len(storage_results["sleep"]["errors"]) +
+                    len(storage_results["workouts"]["errors"]) + 
+                    len(storage_results["recovery"]["errors"])
+                )
+            }
+        })
+        
+        # Determine overall status
+        total_errors = sync_results["storage_summary"]["total_errors"]
+        total_stored = sync_results["storage_summary"]["total_stored"]
+        
+        if total_errors == 0 and total_stored > 0:
+            sync_results["status"] = "success"
+            sync_results["message"] = f"Data sync completed successfully. Stored {total_stored} records using API."
+        elif total_stored > 0 and total_errors > 0:
+            sync_results["status"] = "partial_success"
+            sync_results["message"] = f"Data sync partially completed. Stored {total_stored} records with {total_errors} errors."
+        else:
+            sync_results["status"] = "failed"
+            sync_results["message"] = f"Data sync failed. {total_errors} errors, {total_stored} records stored."
+        
+        # Keep legacy whoop_data for backward compatibility
         sync_results["whoop_api_data"] = whoop_data
-        sync_results["status"] = "success"
-        sync_results["message"] = "Data sync completed successfully (API fetch only - database storage pending)"
         
         logger.info("✅ Data sync completed", 
                    user_id=user_id,

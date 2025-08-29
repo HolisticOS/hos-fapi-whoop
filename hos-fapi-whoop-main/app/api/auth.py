@@ -1,324 +1,164 @@
 """
 WHOOP OAuth Authentication API Endpoints
-Handles complete OAuth 2.0 flow with PKCE support
+Complete automated OAuth flow with database token storage
 """
 
-from fastapi import APIRouter, HTTPException, Query, Path
-from typing import Optional, List
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse, HTMLResponse
 import structlog
 
-from app.services.oauth_service import WhoopOAuthService
-from app.models.schemas import (
-    OAuthAuthorizationRequest, OAuthAuthorizationResponse,
-    OAuthCallbackRequest, ErrorResponse
-)
+from app.services.auth_service import WhoopAuthService
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
 
-# Initialize OAuth service
-oauth_service = WhoopOAuthService()
+# Initialize auth service
+auth_service = WhoopAuthService()
 
-
-@router.post("/authorize", response_model=OAuthAuthorizationResponse)
-async def initiate_oauth_flow(request: OAuthAuthorizationRequest):
+@router.post("/login")
+async def initiate_login(user_id: str):
     """
-    Initiate OAuth 2.0 authorization flow for WHOOP integration
+    Initiate WHOOP OAuth flow for a user
     
     Args:
-        request: OAuth authorization request with user_id and optional custom scopes
-        
+        user_id: Your internal user identifier
+    
     Returns:
-        Authorization URL and state parameter for client redirect
-        
-    Raises:
-        HTTPException: If OAuth initiation fails
+        Authorization URL for user to complete OAuth flow
     """
     try:
-        logger.info("🔐 Initiating OAuth flow", 
-                   user_id=request.user_id,
-                   scopes=request.scopes)
+        oauth_data = await auth_service.initiate_oauth(user_id)
         
-        auth_response = await oauth_service.initiate_oauth_flow(
-            user_id=request.user_id,
-            custom_scopes=request.scopes if request.scopes != ["read:profile", "read:recovery", "read:sleep", "read:workouts", "offline"] else None
-        )
-        
-        return auth_response
+        return {
+            "success": True,
+            "auth_url": oauth_data["auth_url"],
+            "message": "Redirect user to auth_url to complete OAuth flow",
+            "user_id": user_id
+        }
         
     except Exception as e:
-        logger.error("❌ OAuth flow initiation failed", 
-                    user_id=request.user_id, error=str(e))
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to initiate OAuth flow: {str(e)}"
-        )
-
+        logger.error("Login initiation failed", user_id=user_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to initiate login: {str(e)}")
 
 @router.get("/callback")
-async def oauth_callback(
-    code: str = Query(..., description="Authorization code from WHOOP"),
-    state: str = Query(..., description="State parameter for security"),
-    user_id: Optional[str] = Query(None, description="Optional user ID for additional validation")
-):
+async def oauth_callback(code: str = Query(...), state: str = Query(...)):
     """
-    Handle OAuth callback from WHOOP and complete token exchange
+    Handle OAuth callback from WHOOP
     
-    Args:
-        code: Authorization code from WHOOP OAuth flow
-        state: State parameter for CSRF protection
-        user_id: Optional user ID for additional validation
-        
-    Returns:
-        Connection status and user information
-        
-    Raises:
-        HTTPException: If callback handling fails
+    This endpoint receives the authorization code and exchanges it for tokens
     """
     try:
-        logger.info("🔐 Processing OAuth callback", 
-                   code_length=len(code) if code else 0,
-                   state_length=len(state) if state else 0,
-                   user_id=user_id)
+        result = await auth_service.handle_callback(code, state)
         
-        # Handle OAuth callback and create/update user connection
-        whoop_user = await oauth_service.handle_oauth_callback(
-            code=code,
-            state=state,
-            received_user_id=user_id
-        )
+        # Return success page
+        success_html = f"""
+        <html>
+            <head><title>WHOOP Authentication Success</title></head>
+            <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+                <h1>🎉 Authentication Successful!</h1>
+                <p>User <strong>{result['user_id']}</strong> has been connected to WHOOP.</p>
+                <p>You can now access their health data through the API.</p>
+                <p><em>You can close this window.</em></p>
+            </body>
+        </html>
+        """
         
-        if not whoop_user:
-            logger.error("❌ OAuth callback failed", 
-                        code=code[:8] + "..." if code else None)
-            raise HTTPException(
-                status_code=400,
-                detail="OAuth callback failed. Invalid code or state parameter."
-            )
+        return HTMLResponse(content=success_html)
         
-        logger.info("✅ OAuth callback completed successfully", 
-                   user_id=whoop_user.user_id)
-        
-        return {
-            "status": "success",
-            "message": "WHOOP connection established successfully",
-            "user_id": whoop_user.user_id,
-            "whoop_user_id": whoop_user.whoop_user_id,
-            "connected_at": whoop_user.created_at,
-            "scopes": whoop_user.scopes.split() if whoop_user.scopes else [],
-            "token_expires_at": whoop_user.token_expires_at
-        }
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error("❌ OAuth callback processing failed", error=str(e))
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to process OAuth callback: {str(e)}"
-        )
-
+        logger.error("OAuth callback failed", code=code[:10], state=state[:10], error=str(e))
+        
+        error_html = f"""
+        <html>
+            <head><title>WHOOP Authentication Error</title></head>
+            <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
+                <h1>❌ Authentication Failed</h1>
+                <p>There was an error connecting to WHOOP.</p>
+                <p>Error: {str(e)}</p>
+                <p>Please try again or contact support.</p>
+            </body>
+        </html>
+        """
+        
+        return HTMLResponse(content=error_html, status_code=400)
 
 @router.get("/status/{user_id}")
-async def get_connection_status(
-    user_id: str = Path(..., description="User ID to check connection status for")
-):
+async def get_auth_status(user_id: str):
     """
-    Get comprehensive WHOOP connection status for user
+    Get authentication status for a user
     
     Args:
-        user_id: User identifier
-        
+        user_id: Your internal user identifier
+    
     Returns:
-        Detailed connection status including token validity
-        
-    Raises:
-        HTTPException: If status check fails
+        User authentication status and token info
     """
     try:
-        logger.info("📊 Checking connection status", user_id=user_id)
+        user_info = await auth_service.get_user_info(user_id)
         
-        status = await oauth_service.get_connection_status(user_id)
+        if not user_info:
+            return {
+                "user_id": user_id,
+                "is_authenticated": False,
+                "message": "User not found or not authenticated"
+            }
         
-        return status
+        return user_info
         
     except Exception as e:
-        logger.error("❌ Connection status check failed", 
-                    user_id=user_id, error=str(e))
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to check connection status: {str(e)}"
-        )
-
+        logger.error("Failed to get auth status", user_id=user_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to get auth status: {str(e)}")
 
 @router.post("/refresh/{user_id}")
-async def refresh_access_token(
-    user_id: str = Path(..., description="User ID to refresh token for")
-):
+async def refresh_user_token(user_id: str):
     """
-    Manually refresh user's access token
+    Manually refresh a user's access token
     
     Args:
-        user_id: User identifier
-        
+        user_id: Your internal user identifier
+    
     Returns:
         Token refresh status
-        
-    Raises:
-        HTTPException: If token refresh fails
     """
     try:
-        logger.info("🔄 Manually refreshing token", user_id=user_id)
+        # Get valid token (this will auto-refresh if needed)
+        token = await auth_service.get_valid_token(user_id)
         
-        success = await oauth_service.refresh_user_token(user_id)
-        
-        if not success:
-            raise HTTPException(
-                status_code=400,
-                detail="Failed to refresh access token. User may need to re-authorize."
-            )
-        
-        # Get updated connection status
-        status = await oauth_service.get_connection_status(user_id)
-        
-        logger.info("✅ Token refresh successful", user_id=user_id)
-        
-        return {
-            "status": "success",
-            "message": "Access token refreshed successfully",
-            "user_id": user_id,
-            "connection_status": status
-        }
-        
-    except HTTPException:
-        raise
+        if token:
+            return {
+                "success": True,
+                "message": "Token refreshed successfully",
+                "user_id": user_id
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Could not refresh token - user may need to re-authenticate",
+                "user_id": user_id
+            }
+            
     except Exception as e:
-        logger.error("❌ Token refresh failed", user_id=user_id, error=str(e))
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to refresh token: {str(e)}"
-        )
+        logger.error("Token refresh failed", user_id=user_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Token refresh failed: {str(e)}")
 
-
-@router.post("/revoke/{user_id}")
-async def revoke_connection(
-    user_id: str = Path(..., description="User ID to revoke connection for")
-):
-    """
-    Revoke WHOOP connection and invalidate tokens
-    
-    Args:
-        user_id: User identifier
-        
-    Returns:
-        Revocation status
-        
-    Raises:
-        HTTPException: If revocation fails
-    """
-    try:
-        logger.info("🔐 Revoking connection", user_id=user_id)
-        
-        success = await oauth_service.revoke_user_connection(user_id)
-        
-        if not success:
-            logger.warning("⚠️ Connection revocation had issues", user_id=user_id)
-            # Still return success if at least local deactivation worked
-        
-        logger.info("✅ Connection revocation completed", user_id=user_id)
-        
-        return {
-            "status": "success" if success else "partial",
-            "message": "WHOOP connection revoked successfully" if success 
-                      else "Connection revoked locally, remote revocation may have failed",
-            "user_id": user_id,
-            "revoked_at": "now"
-        }
-        
-    except Exception as e:
-        logger.error("❌ Connection revocation failed", 
-                    user_id=user_id, error=str(e))
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to revoke connection: {str(e)}"
-        )
-
-
-@router.post("/validate-token/{user_id}")
-async def validate_token(
-    user_id: str = Path(..., description="User ID to validate token for")
-):
-    """
-    Validate user's current access token
-    
-    Args:
-        user_id: User identifier
-        
-    Returns:
-        Token validation status
-    """
-    try:
-        logger.info("🔍 Validating token", user_id=user_id)
-        
-        is_valid = await oauth_service.is_token_valid(user_id)
-        
-        return {
-            "status": "valid" if is_valid else "invalid",
-            "user_id": user_id,
-            "token_valid": is_valid,
-            "message": "Token is valid and can be used for API requests" if is_valid 
-                      else "Token is expired or invalid, refresh or re-authorize required"
-        }
-        
-    except Exception as e:
-        logger.error("❌ Token validation failed", user_id=user_id, error=str(e))
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to validate token: {str(e)}"
-        )
-
-
-@router.get("/oauth-config")
-async def get_oauth_configuration():
-    """
-    Get OAuth configuration information for client integration
-    
-    Returns:
-        OAuth configuration details (excluding sensitive information)
-    """
-    try:
-        from app.config.settings import settings
-        
-        return {
-            "authorization_url": "https://api.prod.whoop.com/oauth/oauth2/auth",
-            "token_url": "https://api.prod.whoop.com/oauth/oauth2/token",
-            "client_id": settings.WHOOP_CLIENT_ID,
-            "redirect_uri": settings.WHOOP_REDIRECT_URL,
-            "default_scopes": [
-                "read:profile",
-                "read:cycles", 
-                "read:recovery",
-                "read:sleep",
-                "read:workout",
-                "read:body_measurement"
-            ],
-            "available_scopes": [
-                "read:profile",
-                "read:cycles",
-                "read:recovery", 
-                "read:sleep",
-                "read:workout",
-                "read:body_measurement"
-            ],
-            "pkce_supported": True,
-            "pkce_required": True,
-            "state_parameter_required": True,
-            "min_state_length": 8
-        }
-        
-    except Exception as e:
-        logger.error("❌ Failed to get OAuth configuration", error=str(e))
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get OAuth configuration: {str(e)}"
-        )
+@router.get("/")
+async def auth_info():
+    """Get information about the authentication system"""
+    return {
+        "service": "WHOOP OAuth 2.0 Authentication",
+        "version": "v2-only",
+        "endpoints": {
+            "login": "POST /auth/login - Initiate OAuth flow",
+            "callback": "GET /auth/callback - OAuth callback handler", 
+            "status": "GET /auth/status/{user_id} - Check auth status",
+            "refresh": "POST /auth/refresh/{user_id} - Refresh token"
+        },
+        "flow": [
+            "1. POST /auth/login with user_id",
+            "2. Redirect user to returned auth_url", 
+            "3. User completes OAuth on WHOOP",
+            "4. WHOOP redirects to /auth/callback",
+            "5. Tokens are stored automatically",
+            "6. Use API endpoints with stored tokens"
+        ]
+    }

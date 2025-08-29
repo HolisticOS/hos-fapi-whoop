@@ -81,9 +81,12 @@ celerybeat-schedule
 
 # Environments
 .env
+.env.local
+.env.production
 .venv
 env/
 venv/
+myenv/
 ENV/
 env.bak/
 venv.bak/
@@ -118,3 +121,8 @@ dmypy.json
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Project specific
+data_logs/
+debug_*.py
+test_*.txt

@@ -32,7 +32,18 @@ class Settings:
     WHOOP_CLIENT_SECRET: str = os.getenv("WHOOP_CLIENT_SECRET", "")
     WHOOP_REDIRECT_URL: str = os.getenv("WHOOP_REDIRECT_URL", "")
     WHOOP_WEBHOOK_SECRET: str = os.getenv("WHOOP_WEBHOOK_SECRET", "")
-    WHOOP_API_BASE_URL: str = os.getenv("WHOOP_API_BASE_URL", "https://api.prod.whoop.com/developer/v1")
+    WHOOP_ACCESS_TOKEN: str = os.getenv("WHOOP_ACCESS_TOKEN", "")
+    WHOOP_API_BASE_URL: str = os.getenv("WHOOP_API_BASE_URL", "https://api.prod.whoop.com/developer/v2/")
+    
+    # WHOOP API Settings
+    WHOOP_API_VERSION: str = "v2"
+    WHOOP_SUPPORTS_UUIDS: bool = True
+    WHOOP_BACKWARD_COMPATIBILITY: bool = False
+    
+    # API endpoints with UUID support
+    WHOOP_SLEEP_ENDPOINT: str = "activity/sleep"
+    WHOOP_WORKOUT_ENDPOINT: str = "activity/workout"
+    WHOOP_RECOVERY_ENDPOINT: str = "recovery"
     
     # WHOOP API Rate Limiting Settings
     WHOOP_RATE_LIMIT_DELAY: float = float(os.getenv("WHOOP_RATE_LIMIT_DELAY", "0.6"))  # 600ms between requests
