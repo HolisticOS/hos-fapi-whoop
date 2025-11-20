@@ -1,0 +1,446 @@
+{
+	"info": {
+		"_postman_id": "whoop-api-collection",
+		"name": "WHOOP API with Supabase Auth",
+		"description": "Complete test collection for WHOOP API with Supabase JWT authentication",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{
+				"key": "token",
+				"value": "{{supabase_jwt}}",
+				"type": "string"
+			}
+		]
+	},
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8009",
+			"type": "string"
+		},
+		{
+			"key": "well_planned_api",
+			"value": "http://localhost:8000",
+			"type": "string"
+		},
+		{
+			"key": "supabase_jwt",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "test_email",
+			"value": "test@example.com",
+			"type": "string"
+		},
+		{
+			"key": "test_password",
+			"value": "password",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "0. Setup - Get Supabase JWT",
+			"item": [
+				{
+					"name": "Login to Supabase (well-planned-api)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    ",
+									"    // Try different response formats",
+									"    var token = jsonData.access_token || jsonData.token;",
+									"    ",
+									"    if (token) {",
+									"        pm.collectionVariables.set('supabase_jwt', token);",
+									"        pm.environment.set('supabase_jwt', token);",
+									"        console.log('JWT token saved:', token.substring(0, 50) + '...');",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"{{test_email}}\",\n  \"password\": \"{{test_password}}\"\n}"
+						},
+						"url": {
+							"raw": "{{well_planned_api}}/api/auth/login",
+							"host": [
+								"{{well_planned_api}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"login"
+							]
+						},
+						"description": "Login to Supabase via well-planned-api to get JWT token"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "1. WHOOP Authentication",
+			"item": [
+				{
+					"name": "Check WHOOP Status",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/whoop/auth/status",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"whoop",
+								"auth",
+								"status"
+							]
+						},
+						"description": "Check if WHOOP account is linked to current user"
+					},
+					"response": []
+				},
+				{
+					"name": "Initiate WHOOP OAuth",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    var authUrl = jsonData.auth_url;",
+									"    ",
+									"    if (authUrl) {",
+									"        console.log('WHOOP OAuth URL:', authUrl);",
+									"        console.log('Please visit this URL in your browser to authorize WHOOP access');",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/whoop/auth/login",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"whoop",
+								"auth",
+								"login"
+							]
+						},
+						"description": "Start WHOOP OAuth flow - returns auth URL to visit in browser"
+					},
+					"response": []
+				},
+				{
+					"name": "Refresh WHOOP Token",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/whoop/auth/refresh",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"whoop",
+								"auth",
+								"refresh"
+							]
+						},
+						"description": "Manually refresh WHOOP access token"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "2. Data Sync",
+			"item": [
+				{
+					"name": "Sync WHOOP Data (7 days)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/sync?days_back=7&data_types=recovery,sleep,workout,cycle",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"sync"
+							],
+							"query": [
+								{
+									"key": "days_back",
+									"value": "7"
+								},
+								{
+									"key": "data_types",
+									"value": "recovery,sleep,workout,cycle"
+								}
+							]
+						},
+						"description": "Sync WHOOP data from API to database for the last 7 days"
+					},
+					"response": []
+				},
+				{
+					"name": "Sync WHOOP Data (30 days)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/sync?days_back=30&data_types=recovery,sleep,workout,cycle",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"sync"
+							],
+							"query": [
+								{
+									"key": "days_back",
+									"value": "30"
+								},
+								{
+									"key": "data_types",
+									"value": "recovery,sleep,workout,cycle"
+								}
+							]
+						},
+						"description": "Sync WHOOP data for the last 30 days"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "3. Get Data",
+			"item": [
+				{
+					"name": "Get Recovery Data",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/data/recovery?days=7",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"data",
+								"recovery"
+							],
+							"query": [
+								{
+									"key": "days",
+									"value": "7"
+								}
+							]
+						},
+						"description": "Get recovery data for the last 7 days"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Sleep Data",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/data/sleep?days=7",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"data",
+								"sleep"
+							],
+							"query": [
+								{
+									"key": "days",
+									"value": "7"
+								}
+							]
+						},
+						"description": "Get sleep data for the last 7 days"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Workout Data",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/data/workouts?days=7",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"data",
+								"workouts"
+							],
+							"query": [
+								{
+									"key": "days",
+									"value": "7"
+								}
+							]
+						},
+						"description": "Get workout data for the last 7 days"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Health Metrics (All Data)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/health-metrics?days_back=7&source=database&metric_types=recovery,sleep,workout",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"health-metrics"
+							],
+							"query": [
+								{
+									"key": "days_back",
+									"value": "7"
+								},
+								{
+									"key": "source",
+									"value": "database",
+									"description": "Options: database, whoop, both"
+								},
+								{
+									"key": "metric_types",
+									"value": "recovery,sleep,workout"
+								}
+							]
+						},
+						"description": "Get comprehensive health metrics from database"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "4. System Status",
+			"item": [
+				{
+					"name": "Get Client Status",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/client-status",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"client-status"
+							]
+						},
+						"description": "Get WHOOP client status and configuration"
+					},
+					"response": []
+				},
+				{
+					"name": "Health Check",
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/health",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"health"
+							]
+						},
+						"description": "Check if API is running (no auth required)"
+					},
+					"response": []
+				},
+				{
+					"name": "API Root",
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								""
+							]
+						},
+						"description": "Get API information (no auth required)"
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}

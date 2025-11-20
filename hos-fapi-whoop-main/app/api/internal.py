@@ -1,91 +1,73 @@
 """
 Internal WHOOP Health Metrics API Endpoints
 Provides comprehensive health data access and synchronization
+Integrates with Supabase JWT authentication
 """
 
 from fastapi import APIRouter, HTTPException, Query, Path, Depends, Header
 from typing import Optional, List
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from uuid import UUID
 import structlog
 
 from app.services.whoop_service import WhoopAPIService
-# OAuth service removed in v2-only cleanup
 from app.models.database import WhoopDataService
-# Import models as needed from app.models.schemas
+from app.core.auth import get_current_user
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 # Initialize services
 whoop_client = WhoopAPIService()
-# OAuth service removed in v2-only cleanup
 data_service = WhoopDataService()
 
 
-# Simple API key authentication for internal services
-async def verify_api_key(x_api_key: str = Header(...)):
-    """Verify internal API key for service-to-service communication"""
-    from app.config.settings import settings
-    expected_key = getattr(settings, 'SERVICE_API_KEY', 'dev-api-key-change-in-production')
-    if x_api_key != expected_key:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return x_api_key
-
-
-async def verify_user_connection(user_id: str) -> bool:
-    """Dependency to verify user has active WHOOP connection"""
-    status = await oauth_service.get_connection_status(user_id)
-    if not status.get("connected", False):
-        raise HTTPException(
-            status_code=404,
-            detail=f"No active WHOOP connection found for user {user_id}"
-        )
-    return True
-
-
-@router.get("/health-metrics/{user_id}")
+@router.get("/health-metrics")
 async def get_health_metrics(
-    user_id: str = Path(..., description="User ID to get health metrics for"),
+    current_user: str = Depends(get_current_user),
     start_date: Optional[date] = Query(None, description="Start date for data range (YYYY-MM-DD)"),
     end_date: Optional[date] = Query(None, description="End date for data range (YYYY-MM-DD)"),
     metric_types: Optional[str] = Query("recovery,sleep,workout", description="Comma-separated list of metric types"),
     source: str = Query("database", description="Data source: 'database', 'whoop', or 'both'"),
-    days_back: int = Query(7, ge=1, le=30, description="Days of historical data (1-30)"),
-    auth: str = Depends(verify_api_key),
-    _: bool = Depends(verify_user_connection)
+    days_back: int = Query(7, ge=1, le=30, description="Days of historical data (1-30)")
 ):
     """
-    Get comprehensive health metrics for user from database and/or WHOOP API
-    
+    Get comprehensive health metrics for authenticated user from database and/or WHOOP API
+
+    Requires:
+        Authorization: Bearer <supabase_jwt_token>
+
     Args:
-        user_id: User identifier
         start_date: Optional start date (defaults to days_back from today)
         end_date: Optional end date (defaults to today)
         metric_types: Comma-separated metric types (recovery,sleep,workout)
         source: Data source preference (database/whoop/both)
         days_back: Days of historical data if dates not specified
-        
+
     Returns:
         Comprehensive health metrics data
     """
     try:
-        logger.info("📊 Getting health metrics", 
-                   user_id=user_id, 
+        # Convert string UUID to UUID type
+        user_uuid = UUID(current_user)
+
+        logger.info("📊 Getting health metrics",
+                   user_id=current_user,
                    source=source,
                    metric_types=metric_types,
                    days_back=days_back)
-        
+
         # Calculate date range if not provided
         if not end_date:
             end_date = date.today()
         if not start_date:
             start_date = end_date - timedelta(days=days_back)
-        
+
         # Parse requested metric types
         requested_types = [t.strip() for t in metric_types.split(",")] if metric_types else ["recovery", "sleep", "workout"]
-        
+
         result = {
-            "user_id": user_id,
+            "user_id": current_user,
             "date_range": {
                 "start": start_date.isoformat(),
                 "end": end_date.isoformat(),
@@ -95,419 +77,455 @@ async def get_health_metrics(
             "source": source,
             "timestamp": datetime.utcnow().isoformat()
         }
-        
+
         # Get data based on source preference
         if source in ["database", "both"]:
             logger.info("📖 Fetching data from database")
-            db_data = await data_service.get_comprehensive_health_data(user_id, start_date, end_date)
+            db_data = await data_service.get_comprehensive_health_data(user_uuid, start_date, end_date)
             result["database_data"] = db_data
-        
+
         if source in ["whoop", "both"]:
             logger.info("🏃‍♂️ Fetching data from WHOOP API")
-            api_data = await whoop_client.get_comprehensive_user_data(user_id, days_back=(end_date - start_date).days + 1)
+            api_data = await whoop_client.get_comprehensive_data(user_uuid, days_back=(end_date - start_date).days + 1)
             result["whoop_data"] = api_data
-        
+
         # If both sources requested, provide unified view
         if source == "both" and "database_data" in result and "whoop_data" in result:
             result["unified_data"] = _merge_data_sources(result["database_data"], result["whoop_data"])
-        
-        logger.info("✅ Health metrics retrieved successfully", 
-                   user_id=user_id,
+
+        logger.info("✅ Health metrics retrieved successfully",
+                   user_id=current_user,
                    date_range=f"{start_date} to {end_date}")
-        
+
         return result
-        
+
+    except ValueError as e:
+        logger.error("Invalid UUID format", user_id=current_user, error=str(e))
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("❌ Failed to get health metrics", 
-                    user_id=user_id, error=str(e))
+        logger.error("❌ Failed to get health metrics",
+                    user_id=current_user, error=str(e))
         raise HTTPException(
             status_code=500,
             detail=f"Failed to retrieve health metrics: {str(e)}"
         )
 
 
-@router.get("/data/recovery/{user_id}")
+@router.get("/data/recovery")
 async def get_recovery_data(
-    user_id: str = Path(..., description="User ID to get recovery data for"),
-    days: int = Query(7, ge=1, le=30, description="Days of historical data"),
-    auth: str = Depends(verify_api_key),
-    _: bool = Depends(verify_user_connection)
+    current_user: str = Depends(get_current_user),
+    days: int = Query(7, ge=1, le=30, description="Days of historical data")
 ):
     """
-    Get user's recovery data from WHOOP API
-    
+    Get authenticated user's recovery data from WHOOP API
+
+    Requires:
+        Authorization: Bearer <supabase_jwt_token>
+
     Args:
-        user_id: User identifier
         days: Number of days of recovery data
-        
+
     Returns:
         Recovery data from WHOOP API
     """
     try:
-        logger.info("💚 Getting recovery data", user_id=user_id, days=days)
-        
-        # Get cycles first, then recovery data for each
-        end_date = datetime.utcnow()
+        # Convert string UUID to UUID type
+        user_uuid = UUID(current_user)
+
+        logger.info("💚 Getting recovery data", user_id=current_user, days=days)
+
+        # Get recovery data from WHOOP API
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days)
-        
-        cycles = await whoop_client.get_cycles(user_id, limit=days * 2, start=start_date, end=end_date)
-        
-        recovery_data = []
-        for cycle in cycles:
-            if 'id' in cycle:
-                recovery = await whoop_client.get_recovery_data(user_id, cycle['id'])
-                if recovery:
-                    recovery_data.append({
-                        "cycle": cycle,
-                        "recovery": recovery.model_dump()
-                    })
-        
-        logger.info("✅ Recovery data retrieved", 
-                   user_id=user_id, 
-                   cycles_count=len(cycles),
-                   recovery_count=len(recovery_data))
-        
+        start_iso = start_date.isoformat()
+        end_iso = end_date.isoformat()
+
+        # Convert UUID to string for API service
+        recovery_collection = await whoop_client.get_recovery_data(str(user_uuid), start_iso, end_iso, limit=10)
+
+        logger.info("✅ Recovery data retrieved",
+                   user_id=current_user,
+                   recovery_count=len(recovery_collection.records))
+
         return {
-            "user_id": user_id,
+            "user_id": current_user,
             "date_range": {
                 "start": start_date.isoformat(),
                 "end": end_date.isoformat(),
                 "days": days
             },
-            "cycles": cycles,
-            "recovery_data": recovery_data,
+            "recovery_data": [r.model_dump() if hasattr(r, 'model_dump') else r for r in recovery_collection.records],
             "summary": {
-                "cycles_found": len(cycles),
-                "recovery_records": len(recovery_data)
+                "recovery_records": len(recovery_collection.records),
+                "has_next_page": bool(recovery_collection.next_token)
             },
             "retrieved_at": datetime.utcnow().isoformat()
         }
-        
+
+    except ValueError as e:
+        logger.error("Invalid UUID format", user_id=current_user, error=str(e))
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("❌ Failed to get recovery data", user_id=user_id, error=str(e))
+        logger.error("❌ Failed to get recovery data", user_id=current_user, error=str(e))
         raise HTTPException(
             status_code=500,
             detail=f"Failed to retrieve recovery data: {str(e)}"
         )
 
 
-@router.get("/data/sleep/{user_id}")
+@router.get("/data/sleep")
 async def get_sleep_data(
-    user_id: str = Path(..., description="User ID to get sleep data for"),
-    days: int = Query(7, ge=1, le=30, description="Days of historical data"),
-    auth: str = Depends(verify_api_key),
-    _: bool = Depends(verify_user_connection)
+    current_user: str = Depends(get_current_user),
+    days: int = Query(7, ge=1, le=30, description="Days of historical data")
 ):
     """
-    Get user's sleep data from WHOOP API
-    
+    Get authenticated user's sleep data from WHOOP API
+
+    Requires:
+        Authorization: Bearer <supabase_jwt_token>
+
     Args:
-        user_id: User identifier  
         days: Number of days of sleep data
-        
+
     Returns:
         Sleep data from WHOOP API
     """
     try:
-        logger.info("😴 Getting sleep data", user_id=user_id, days=days)
-        
-        end_date = datetime.utcnow()
+        # Convert string UUID to UUID type
+        user_uuid = UUID(current_user)
+
+        logger.info("😴 Getting sleep data", user_id=current_user, days=days)
+
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days)
-        
-        sleep_data = await whoop_client.get_sleep_activities(user_id, limit=days * 2, start=start_date, end=end_date)
-        
-        logger.info("✅ Sleep data retrieved", 
-                   user_id=user_id, 
-                   records_count=len(sleep_data))
-        
+        start_iso = start_date.isoformat()
+        end_iso = end_date.isoformat()
+
+        # Convert UUID to string for API service
+        sleep_collection = await whoop_client.get_sleep_data(str(user_uuid), start_iso, end_iso, limit=10)
+
+        logger.info("✅ Sleep data retrieved",
+                   user_id=current_user,
+                   records_count=len(sleep_collection.records))
+
         return {
-            "user_id": user_id,
+            "user_id": current_user,
             "date_range": {
                 "start": start_date.isoformat(),
                 "end": end_date.isoformat(),
                 "days": days
             },
-            "sleep_data": [s.model_dump() for s in sleep_data],
+            "sleep_data": [s.model_dump() if hasattr(s, 'model_dump') else s for s in sleep_collection.records],
             "summary": {
-                "sleep_records": len(sleep_data),
-                "total_sleep_hours": sum(s.duration_seconds or 0 for s in sleep_data) / 3600 if sleep_data else 0
+                "sleep_records": len(sleep_collection.records),
+                "has_next_page": bool(sleep_collection.next_token)
             },
             "retrieved_at": datetime.utcnow().isoformat()
         }
-        
+
+    except ValueError as e:
+        logger.error("Invalid UUID format", user_id=current_user, error=str(e))
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("❌ Failed to get sleep data", user_id=user_id, error=str(e))
+        logger.error("❌ Failed to get sleep data", user_id=current_user, error=str(e))
         raise HTTPException(
             status_code=500,
             detail=f"Failed to retrieve sleep data: {str(e)}"
         )
 
 
-@router.get("/data/workouts/{user_id}")
+@router.get("/data/workouts")
 async def get_workout_data(
-    user_id: str = Path(..., description="User ID to get workout data for"),
-    days: int = Query(7, ge=1, le=30, description="Days of historical data"),
-    auth: str = Depends(verify_api_key),
-    _: bool = Depends(verify_user_connection)
+    current_user: str = Depends(get_current_user),
+    days: int = Query(7, ge=1, le=30, description="Days of historical data")
 ):
     """
-    Get user's workout data from WHOOP API
-    
+    Get authenticated user's workout data from WHOOP API
+
+    Requires:
+        Authorization: Bearer <supabase_jwt_token>
+
     Args:
-        user_id: User identifier
         days: Number of days of workout data
-        
+
     Returns:
         Workout data from WHOOP API
     """
     try:
-        logger.info("🏋️‍♂️ Getting workout data", user_id=user_id, days=days)
-        
-        end_date = datetime.utcnow()
+        # Convert string UUID to UUID type
+        user_uuid = UUID(current_user)
+
+        logger.info("🏋️‍♂️ Getting workout data", user_id=current_user, days=days)
+
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days)
-        
-        workout_data = await whoop_client.get_workout_activities(user_id, limit=days * 4, start=start_date, end=end_date)
-        
-        logger.info("✅ Workout data retrieved", 
-                   user_id=user_id, 
-                   records_count=len(workout_data))
-        
+        start_iso = start_date.isoformat()
+        end_iso = end_date.isoformat()
+
+        # Convert UUID to string for API service
+        workout_collection = await whoop_client.get_workout_data(str(user_uuid), start_iso, end_iso, limit=10)
+
+        logger.info("✅ Workout data retrieved",
+                   user_id=current_user,
+                   records_count=len(workout_collection.records))
+
         return {
-            "user_id": user_id,
+            "user_id": current_user,
             "date_range": {
                 "start": start_date.isoformat(),
                 "end": end_date.isoformat(),
                 "days": days
             },
-            "workout_data": [w.model_dump() for w in workout_data],
+            "workout_data": [w.model_dump() if hasattr(w, 'model_dump') else w for w in workout_collection.records],
             "summary": {
-                "workout_records": len(workout_data),
-                "total_strain": sum(w.strain or 0 for w in workout_data) if workout_data else 0,
-                "total_duration_hours": sum(w.duration_seconds or 0 for w in workout_data) / 3600 if workout_data else 0
+                "workout_records": len(workout_collection.records),
+                "has_next_page": bool(workout_collection.next_token)
             },
             "retrieved_at": datetime.utcnow().isoformat()
         }
-        
+
+    except ValueError as e:
+        logger.error("Invalid UUID format", user_id=current_user, error=str(e))
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("❌ Failed to get workout data", user_id=user_id, error=str(e))
+        logger.error("❌ Failed to get workout data", user_id=current_user, error=str(e))
         raise HTTPException(
             status_code=500,
             detail=f"Failed to retrieve workout data: {str(e)}"
         )
 
 
-@router.get("/auth/status/{user_id}")
-async def check_connection_status(
-    user_id: str = Path(..., description="User ID to check connection status for"),
-    auth: str = Depends(verify_api_key)
-):
-    """
-    Check if user has active WHOOP connection
-    
-    Args:
-        user_id: User identifier
-        
-    Returns:
-        Detailed connection status
-    """
-    try:
-        logger.info("📊 Checking connection status", user_id=user_id)
-        
-        status = await oauth_service.get_connection_status(user_id)
-        
-        return {
-            "user_id": user_id,
-            "connection_status": status,
-            "checked_at": datetime.utcnow().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error("❌ Connection status check failed", 
-                    user_id=user_id, error=str(e))
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to check connection status: {str(e)}"
-        )
 
 
-@router.post("/auth/connect/{user_id}")
-async def initiate_connection(
-    user_id: str = Path(..., description="User ID to initiate connection for"),
-    auth: str = Depends(verify_api_key)
-):
-    """
-    Initiate OAuth connection for user
-    
-    Args:
-        user_id: User identifier
-        
-    Returns:
-        OAuth authorization URL and state for connection
-    """
-    try:
-        logger.info("🔐 Initiating OAuth connection", user_id=user_id)
-        
-        # Use default comprehensive scopes
-        auth_response = await oauth_service.initiate_oauth_flow(user_id)
-        
-        return {
-            "user_id": user_id,
-            "oauth_flow": auth_response.model_dump(),
-            "initiated_at": datetime.utcnow().isoformat(),
-            "instructions": "Redirect user to authorization_url to complete OAuth flow"
-        }
-        
-    except Exception as e:
-        logger.error("❌ OAuth connection initiation failed", 
-                    user_id=user_id, error=str(e))
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to initiate OAuth connection: {str(e)}"
-        )
-
-
-@router.post("/sync/{user_id}")
+@router.post("/sync")
 async def sync_user_data(
-    user_id: str = Path(..., description="User ID to sync data for"),
-    data_types: Optional[str] = Query("recovery,sleep,workout", description="Comma-separated data types to sync"),
+    current_user: str = Depends(get_current_user),
+    data_types: Optional[str] = Query("recovery,sleep,workout,cycle", description="Comma-separated data types to sync"),
     days_back: int = Query(7, ge=1, le=30, description="Days of data to sync (1-30)"),
-    force_refresh: bool = Query(False, description="Force refresh even if recently synced"),
-    auth: str = Depends(verify_api_key),
-    _: bool = Depends(verify_user_connection)
+    force_refresh: bool = Query(False, description="Force refresh even if recently synced")
 ):
     """
-    Sync user's WHOOP data from API to database
-    
+    Sync authenticated user's WHOOP data from API to database
+
+    Requires:
+        Authorization: Bearer <supabase_jwt_token>
+
     Args:
-        user_id: User identifier
-        data_types: Comma-separated data types (recovery,sleep,workout)
+        data_types: Comma-separated data types (recovery,sleep,workout,cycle)
         days_back: Number of days to sync
         force_refresh: Force sync even if recently synced
-        
+
     Returns:
         Sync status and statistics
     """
     try:
-        logger.info("🔄 Starting data sync", 
-                   user_id=user_id, 
+        # Convert string UUID to UUID type
+        user_uuid = UUID(current_user)
+
+        logger.info("🔄 Starting data sync",
+                   user_id=current_user,
                    data_types=data_types,
                    days_back=days_back,
                    force_refresh=force_refresh)
-        
+
         # Parse data types
-        sync_types = [t.strip() for t in data_types.split(",")] if data_types else ["recovery", "sleep", "workout"]
-        
-        # Get fresh data from WHOOP API
-        whoop_data = await whoop_client.get_comprehensive_user_data(user_id, days_back=days_back)
-        
-        if "error" in whoop_data:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Failed to fetch data from WHOOP API: {whoop_data['error']}"
-            )
-        
-        sync_results = {
-            "user_id": user_id,
-            "sync_timestamp": datetime.utcnow().isoformat(),
-            "requested_types": sync_types,
-            "days_synced": days_back,
-            "force_refresh": force_refresh,
-            "results": {}
-        }
-        
-        # Implement v2 database storage
-        from app.services.whoop_service import whoop_service
-        from app.models.database import WhoopDataService
-        
-        # Initialize services
-        data_service = WhoopDataService()
-        
+        sync_types = [t.strip() for t in data_types.split(",")] if data_types else ["recovery", "sleep", "workout", "cycle"]
+
         # Calculate date range for API
         end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days_back)
         start_iso = start_date.isoformat()
         end_iso = end_date.isoformat()
-        
-        logger.info("🔄 Starting API data sync", 
-                   user_id=user_id,
+
+        logger.info("🔄 Starting API data sync",
+                   user_id=current_user,
                    start_date=start_iso,
                    end_date=end_iso)
-        
-        # Fetch comprehensive data using API
-        data_response = await whoop_service.get_comprehensive_data(
-            user_id=user_id,
+
+        # Fetch comprehensive data using API with UUID
+        # Convert UUID to string for the API service
+        # Use limit based on days_back to get approximately one record per day
+        data_response = await whoop_client.get_comprehensive_data(
+            user_id=str(user_uuid),
             days_back=days_back,
-            include_all_pages=True  # Get all paginated data
+            include_all_pages=False  # Don't fetch all pages, respect the limit
         )
-        
-        # Store v2 data in database
-        storage_results = await data_service.store_comprehensive_data(
-            user_id=user_id,
-            response=data_response
-        )
-        
-        # Update sync results with v2 data and storage info
-        sync_results.update({
-            "api_version": "v2",  # Using API with UUID identifiers
-            "storage_results": storage_results,
+
+        # Store data in database using repository
+        from app.repositories.whoop_data_repository import WhoopDataRepository
+        from app.db.supabase_client import get_supabase
+
+        supabase = get_supabase()
+        repo = WhoopDataRepository(supabase.get_client())
+
+        # Store recovery data
+        recovery_stored = 0
+        if "recovery" in sync_types and data_response.recovery_data:
+            logger.info(f"🔍 Recovery data_response has {len(data_response.recovery_data)} records", user_id=current_user)
+
+            # Debug: Check what's in the recovery data
+            for i, r in enumerate(data_response.recovery_data[:2]):  # Check first 2 records
+                logger.info(f"🔍 Recovery record {i}: has_raw_data={hasattr(r, 'raw_data')}, raw_data_type={type(r.raw_data) if hasattr(r, 'raw_data') else 'N/A'}, raw_data_empty={len(r.raw_data) == 0 if hasattr(r, 'raw_data') else 'N/A'}", user_id=current_user)
+
+            recovery_records = [r.raw_data for r in data_response.recovery_data if hasattr(r, 'raw_data') and r.raw_data]
+            logger.info(f"💾 Extracted {len(recovery_records)} recovery records with raw_data (from {len(data_response.recovery_data)} total)", user_id=current_user)
+
+            if recovery_records:
+                logger.info(f"💾 Storing {len(recovery_records)} recovery records to whoop_recovery table", user_id=current_user)
+                recovery_stored = await repo.store_recovery_records(user_uuid, recovery_records)
+                logger.info(f"✅ Stored {recovery_stored} recovery records", user_id=current_user)
+            else:
+                logger.warning(f"⚠️ No recovery records to store - raw_data extraction returned empty list", user_id=current_user)
+        else:
+            logger.warning(f"⚠️ Skipping recovery storage",
+                          in_sync_types="recovery" in sync_types,
+                          has_data=bool(data_response.recovery_data),
+                          recovery_count=len(data_response.recovery_data) if data_response.recovery_data else 0,
+                          user_id=current_user)
+
+        # Store sleep data
+        sleep_stored = 0
+        if "sleep" in sync_types and data_response.sleep_data:
+            logger.info(f"🔍 Sleep data_response has {len(data_response.sleep_data)} records", user_id=current_user)
+
+            # Debug: Check first record
+            if data_response.sleep_data:
+                s = data_response.sleep_data[0]
+                logger.info(f"🔍 Sleep record 0: has_raw_data={hasattr(s, 'raw_data')}, raw_data_type={type(s.raw_data) if hasattr(s, 'raw_data') else 'N/A'}, raw_data_empty={len(s.raw_data) == 0 if hasattr(s, 'raw_data') else 'N/A'}", user_id=current_user)
+
+            sleep_records = [s.raw_data for s in data_response.sleep_data if hasattr(s, 'raw_data') and s.raw_data]
+            logger.info(f"💾 Extracted {len(sleep_records)} sleep records with raw_data (from {len(data_response.sleep_data)} total)", user_id=current_user)
+
+            if sleep_records:
+                logger.info(f"💾 Storing {len(sleep_records)} sleep records to whoop_sleep table", user_id=current_user)
+                sleep_stored = await repo.store_sleep_records(user_uuid, sleep_records)
+                logger.info(f"✅ Stored {sleep_stored} sleep records", user_id=current_user)
+            else:
+                logger.warning(f"⚠️ No sleep records to store - raw_data extraction returned empty list", user_id=current_user)
+        else:
+            logger.warning(f"⚠️ Skipping sleep storage",
+                          in_sync_types="sleep" in sync_types,
+                          has_data=bool(data_response.sleep_data),
+                          sleep_count=len(data_response.sleep_data) if data_response.sleep_data else 0,
+                          user_id=current_user)
+
+        # Store workout data
+        workout_stored = 0
+        if "workout" in sync_types and data_response.workout_data:
+            logger.info(f"🔍 Workout data_response has {len(data_response.workout_data)} records", user_id=current_user)
+
+            # Debug: Check first record
+            if data_response.workout_data:
+                w = data_response.workout_data[0]
+                logger.info(f"🔍 Workout record 0: has_raw_data={hasattr(w, 'raw_data')}, raw_data_type={type(w.raw_data) if hasattr(w, 'raw_data') else 'N/A'}, raw_data_empty={len(w.raw_data) == 0 if hasattr(w, 'raw_data') else 'N/A'}", user_id=current_user)
+
+            workout_records = [w.raw_data for w in data_response.workout_data if hasattr(w, 'raw_data') and w.raw_data]
+            logger.info(f"💾 Extracted {len(workout_records)} workout records with raw_data (from {len(data_response.workout_data)} total)", user_id=current_user)
+
+            if workout_records:
+                logger.info(f"💾 Storing {len(workout_records)} workout records to whoop_workout table", user_id=current_user)
+                workout_stored = await repo.store_workout_records(user_uuid, workout_records)
+                logger.info(f"✅ Stored {workout_stored} workout records", user_id=current_user)
+            else:
+                logger.warning(f"⚠️ No workout records to store - raw_data extraction returned empty list", user_id=current_user)
+        else:
+            logger.warning(f"⚠️ Skipping workout storage",
+                          in_sync_types="workout" in sync_types,
+                          has_data=bool(data_response.workout_data),
+                          workout_count=len(data_response.workout_data) if data_response.workout_data else 0,
+                          user_id=current_user)
+
+        # Store cycle data (now included in comprehensive data response)
+        cycle_stored = 0
+        if "cycle" in sync_types and data_response.cycle_data:
+            logger.info(f"🔍 Cycle data_response has {len(data_response.cycle_data)} records", user_id=current_user)
+
+            # Debug: Check first record
+            if data_response.cycle_data:
+                c = data_response.cycle_data[0]
+                logger.info(f"🔍 Cycle record 0: has_raw_data={hasattr(c, 'raw_data')}, raw_data_type={type(c.raw_data) if hasattr(c, 'raw_data') else 'N/A'}, raw_data_empty={len(c.raw_data) == 0 if hasattr(c, 'raw_data') and c.raw_data else 'N/A'}", user_id=current_user)
+
+            cycle_records = [c.raw_data for c in data_response.cycle_data if hasattr(c, 'raw_data') and c.raw_data]
+            logger.info(f"💾 Extracted {len(cycle_records)} cycle records with raw_data (from {len(data_response.cycle_data)} total)", user_id=current_user)
+
+            if cycle_records:
+                logger.info(f"💾 Storing {len(cycle_records)} cycle records to whoop_cycle table", user_id=current_user)
+                cycle_stored = await repo.store_cycle_records(user_uuid, cycle_records)
+                logger.info(f"✅ Stored {cycle_stored} cycle records", user_id=current_user)
+            else:
+                logger.warning(f"⚠️ No cycle records to store - raw_data extraction returned empty list", user_id=current_user)
+        else:
+            logger.warning(f"⚠️ Skipping cycle storage",
+                          in_sync_types="cycle" in sync_types,
+                          has_data=bool(data_response.cycle_data),
+                          cycle_count=len(data_response.cycle_data) if data_response.cycle_data else 0,
+                          user_id=current_user)
+
+        total_stored = recovery_stored + sleep_stored + workout_stored + cycle_stored
+
+        # Update sync log for each data type
+        if "recovery" in sync_types:
+            await repo.update_sync_log(user_uuid, 'recovery', recovery_stored, 'success')
+        if "sleep" in sync_types:
+            await repo.update_sync_log(user_uuid, 'sleep', sleep_stored, 'success')
+        if "workout" in sync_types:
+            await repo.update_sync_log(user_uuid, 'workout', workout_stored, 'success')
+        if "cycle" in sync_types:
+            await repo.update_sync_log(user_uuid, 'cycle', cycle_stored, 'success')
+
+        sync_results = {
+            "user_id": current_user,
+            "sync_timestamp": datetime.utcnow().isoformat(),
+            "requested_types": sync_types,
+            "days_synced": days_back,
+            "force_refresh": force_refresh,
+            "api_version": "v2",
             "data_summary": {
-                "sleep_records": len(data_response.sleep_data),
-                "workout_records": len(data_response.workout_data), 
-                "recovery_records": len(data_response.recovery_data),
+                "recovery_records": len(data_response.recovery_data) if data_response.recovery_data else 0,
+                "sleep_records": len(data_response.sleep_data) if data_response.sleep_data else 0,
+                "workout_records": len(data_response.workout_data) if data_response.workout_data else 0,
+                "cycle_records": len(data_response.cycle_data) if data_response.cycle_data else 0,
                 "total_records": data_response.total_records
             },
             "storage_summary": {
-                "sleep_stored": storage_results["sleep"]["stored"],
-                "workouts_stored": storage_results["workouts"]["stored"],
-                "recovery_stored": storage_results["recovery"]["stored"],
-                "total_stored": (
-                    storage_results["sleep"]["stored"] + 
-                    storage_results["workouts"]["stored"] + 
-                    storage_results["recovery"]["stored"]
-                ),
-                "total_errors": (
-                    len(storage_results["sleep"]["errors"]) +
-                    len(storage_results["workouts"]["errors"]) + 
-                    len(storage_results["recovery"]["errors"])
-                )
+                "recovery_stored": recovery_stored,
+                "sleep_stored": sleep_stored,
+                "workouts_stored": workout_stored,
+                "cycles_stored": cycle_stored,
+                "total_stored": total_stored
             }
-        })
-        
+        }
+
         # Determine overall status
-        total_errors = sync_results["storage_summary"]["total_errors"]
-        total_stored = sync_results["storage_summary"]["total_stored"]
-        
-        if total_errors == 0 and total_stored > 0:
+        if total_stored > 0:
             sync_results["status"] = "success"
-            sync_results["message"] = f"Data sync completed successfully. Stored {total_stored} records using API."
-        elif total_stored > 0 and total_errors > 0:
-            sync_results["status"] = "partial_success"
-            sync_results["message"] = f"Data sync partially completed. Stored {total_stored} records with {total_errors} errors."
+            sync_results["message"] = f"Data sync completed successfully. Stored {total_stored} records."
         else:
-            sync_results["status"] = "failed"
-            sync_results["message"] = f"Data sync failed. {total_errors} errors, {total_stored} records stored."
-        
-        # Keep legacy whoop_data for backward compatibility
-        sync_results["whoop_api_data"] = whoop_data
-        
-        logger.info("✅ Data sync completed", 
-                   user_id=user_id,
-                   synced_types=sync_types)
-        
+            sync_results["status"] = "no_new_data"
+            sync_results["message"] = "No new data to sync. All records already exist."
+
+        logger.info("✅ Data sync completed",
+                   user_id=current_user,
+                   synced_types=sync_types,
+                   total_stored=total_stored)
+
         return sync_results
-        
+
+    except ValueError as e:
+        logger.error("Invalid UUID format", user_id=current_user, error=str(e))
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("❌ Data sync failed", user_id=user_id, error=str(e))
+        logger.error("❌ Data sync failed", user_id=current_user, error=str(e))
         raise HTTPException(
             status_code=500,
             detail=f"Failed to sync data: {str(e)}"
@@ -515,26 +533,30 @@ async def sync_user_data(
 
 
 @router.get("/client-status")
-async def get_client_status(auth: str = Depends(verify_api_key)):
+async def get_client_status(current_user: str = Depends(get_current_user)):
     """
-    Get WHOOP API client status and configuration
-    
+    Get WHOOP API client status and configuration for authenticated user
+
+    Requires:
+        Authorization: Bearer <supabase_jwt_token>
+
     Returns:
         Client status, rate limiting, and configuration information
     """
     try:
-        logger.info("📊 Getting client status")
-        
-        client_status = whoop_client.get_client_status()
-        
+        logger.info("📊 Getting client status", user_id=current_user)
+
+        client_status = whoop_client.get_service_status()
+
         return {
             "service_status": "operational",
             "whoop_client": client_status,
+            "user_id": current_user,
             "timestamp": datetime.utcnow().isoformat()
         }
-        
+
     except Exception as e:
-        logger.error("❌ Failed to get client status", error=str(e))
+        logger.error("❌ Failed to get client status", user_id=current_user, error=str(e))
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get client status: {str(e)}"

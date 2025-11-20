@@ -33,7 +33,8 @@ class Settings:
     WHOOP_REDIRECT_URL: str = os.getenv("WHOOP_REDIRECT_URL", "")
     WHOOP_WEBHOOK_SECRET: str = os.getenv("WHOOP_WEBHOOK_SECRET", "")
     WHOOP_ACCESS_TOKEN: str = os.getenv("WHOOP_ACCESS_TOKEN", "")
-    WHOOP_API_BASE_URL: str = os.getenv("WHOOP_API_BASE_URL", "https://api.prod.whoop.com/developer/v2/")
+    # WHOOP API v2 base URL
+    WHOOP_API_BASE_URL: str = os.getenv("WHOOP_API_BASE_URL", "https://api.prod.whoop.com/developer/v2")
     
     # WHOOP API Settings
     WHOOP_API_VERSION: str = "v2"

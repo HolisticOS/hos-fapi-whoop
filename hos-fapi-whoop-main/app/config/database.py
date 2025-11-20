@@ -44,25 +44,36 @@ async def init_database():
         return False
     
     try:
-        # Check if WHOOP tables exist
-        required_tables = ["whoop_users", "whoop_oauth_tokens", "whoop_data", "whoop_sync_jobs"]
+        # Check if WHOOP tables exist (updated for Supabase auth integration)
+        required_tables = [
+            "whoop_users",        # OAuth tokens linked to Supabase users
+            "whoop_oauth_states", # OAuth state storage
+            "whoop_recovery",     # Recovery data
+            "whoop_sleep",        # Sleep data
+            "whoop_workout",      # Workout data
+            "whoop_cycle",        # Cycle data
+            "whoop_sync_log"      # Sync tracking
+        ]
         missing_tables = []
-        
+
         for table_name in required_tables:
             if not await table_exists(table_name):
                 missing_tables.append(table_name)
-        
+
         if missing_tables:
             logger.warning(
-                "Database tables missing - running in degraded mode", 
+                "Database tables missing - running in degraded mode",
                 missing_tables=missing_tables,
-                migration_required=True
+                migration_required=True,
+                solution="Run SQL migration: /migrations/002_whoop_data_tables_supabase.sql"
             )
             return False
-        
+
         # Test connection to whoop_users table specifically
-        result = supabase.table("whoop_users").select("id").limit(1).execute()
-        logger.info("Database connection established", table_count=len(result.data) if result.data else 0)
+        result = supabase.table("whoop_users").select("user_id").limit(1).execute()
+        logger.info("Database connection established",
+                   tables_verified=len(required_tables),
+                   whoop_users_count=len(result.data) if result.data else 0)
         return True
         
     except Exception as e:
@@ -71,7 +82,7 @@ async def init_database():
             logger.warning(
                 "Database tables not found - application will run in degraded mode",
                 error=str(e),
-                solution="Run SQL migration script: /migrations/001_create_whoop_tables.sql"
+                solution="Run SQL migration script: /migrations/002_whoop_data_tables_supabase.sql"
             )
             return False
         else:

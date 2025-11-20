@@ -2,12 +2,14 @@
 WHOOP API Service Implementation
 Handles UUID identifiers for Sleep and Workout resources
 Extends the existing API client with v2-specific functionality
+Integrates with Supabase authentication (UUID-based user_id)
 """
 
 import asyncio
 import time
 from typing import Optional, Dict, Any, List, Union
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
+from uuid import UUID
 import httpx
 import structlog
 from cachetools import TTLCache
@@ -106,39 +108,42 @@ class WhoopAPIService:
         self,
         method: str,
         endpoint: str,
-        user_id: str,
+        supabase_user_id: UUID,
         params: Optional[Dict[str, Any]] = None,
         cache_key: Optional[str] = None,
         bypass_cache: bool = False
     ) -> Optional[Dict[str, Any]]:
         """
         Make authenticated request to WHOOP API with UUID handling
-        
+
         Args:
             method: HTTP method
             endpoint: API endpoint path
-            user_id: User identifier for authentication
+            supabase_user_id: Supabase UUID from auth.users.id (from JWT token)
             params: Query parameters
             cache_key: Cache key for response caching
             bypass_cache: Skip cache lookup
-            
+
         Returns:
             API response data or None if failed
         """
+        # Convert UUID to string for logging and cache keys
+        user_id_str = str(supabase_user_id)
+
         # Check cache first
         if cache_key and not bypass_cache:
             cached_response = self.cache.get(cache_key)
             if cached_response:
-                logger.info("cache hit", cache_key=cache_key, user_id=user_id)
+                logger.info("cache hit", cache_key=cache_key, supabase_user_id=supabase_user_id)
                 return cached_response
-        
-        # Get valid access token from database
+
+        # Get valid access token from database using Supabase UUID
         from app.services.auth_service import WhoopAuthService
         auth_service = WhoopAuthService()
-        access_token = await auth_service.get_valid_token(user_id)
-        
+        access_token = await auth_service.get_valid_token(supabase_user_id)
+
         if not access_token:
-            logger.error("No valid access token for user", user_id=user_id)
+            logger.error("No valid access token for user", supabase_user_id=supabase_user_id)
             return None
         
         # Ensure endpoint has proper v2 base URL
@@ -158,15 +163,15 @@ class WhoopAPIService:
             try:
                 # Acquire rate limiting permit
                 if not await self.rate_limiter.acquire_permit():
-                    logger.error("Rate limit exceeded for API", 
-                               user_id=user_id, endpoint=endpoint)
+                    logger.error("Rate limit exceeded for API",
+                               supabase_user_id=supabase_user_id, endpoint=endpoint)
                     return None
-                
+
                 async with httpx.AsyncClient() as client:
-                    logger.info(f"Making {method} request", 
-                               endpoint=endpoint, 
+                    logger.info(f"Making {method} request",
+                               endpoint=endpoint,
                                attempt=attempt + 1,
-                               user_id=user_id)
+                               supabase_user_id=supabase_user_id)
                     
                     response = await client.request(
                         method=method,
@@ -187,42 +192,42 @@ class WhoopAPIService:
                         
                         logger.info("API request successful",
                                    endpoint=endpoint,
-                                   user_id=user_id,
+                                   supabase_user_id=supabase_user_id,
                                    response_size=len(str(data)))
                         return data
-                    
+
                     elif response.status_code == 401:
                         # Unauthorized - attempt token refresh
-                        logger.warning("API unauthorized, attempting token refresh", 
-                                     user_id=user_id)
-                        
+                        logger.warning("API unauthorized, attempting token refresh",
+                                     supabase_user_id=supabase_user_id)
+
                         # Token refresh is now handled automatically by auth_service
                         # Try to get a fresh token
-                        fresh_token = await auth_service.get_valid_token(user_id)
+                        fresh_token = await auth_service.get_valid_token(supabase_user_id)
                         if fresh_token and fresh_token != access_token:
                             headers['Authorization'] = f'Bearer {fresh_token}'
                             continue
-                        
-                        logger.error("API authentication failed after refresh", 
-                                   user_id=user_id)
+
+                        logger.error("API authentication failed after refresh",
+                                   supabase_user_id=supabase_user_id)
                         return None
-                    
+
                     elif response.status_code == 404:
                         # Resource not found - could be v1/v2 ID mismatch
-                        logger.warning("API resource not found", 
+                        logger.warning("API resource not found",
                                      endpoint=endpoint,
-                                     user_id=user_id,
+                                     supabase_user_id=supabase_user_id,
                                      status_code=response.status_code)
                         return None
-                        
+
                     elif response.status_code == 429:
                         # Rate limited
                         retry_after = response.headers.get('Retry-After', '60')
                         retry_delay = int(retry_after)
-                        
-                        logger.warning("API rate limited", 
+
+                        logger.warning("API rate limited",
                                      retry_after=retry_delay,
-                                     user_id=user_id)
+                                     supabase_user_id=supabase_user_id)
                         
                         if attempt < self.max_retries:
                             await asyncio.sleep(retry_delay)
@@ -232,17 +237,17 @@ class WhoopAPIService:
                     
                     elif 400 <= response.status_code < 500:
                         # Client error
-                        logger.error("API client error", 
+                        logger.error("API client error",
                                    status_code=response.status_code,
                                    response=response.text,
-                                   user_id=user_id)
+                                   supabase_user_id=supabase_user_id)
                         return None
-                    
+
                     elif response.status_code >= 500:
                         # Server error - retry with backoff
                         if attempt < self.max_retries:
                             delay = self.retry_base_delay * (2 ** attempt)
-                            logger.warning("API server error, retrying", 
+                            logger.warning("API server error, retrying",
                                          status_code=response.status_code,
                                          delay=delay,
                                          attempt=attempt + 1)
@@ -250,24 +255,24 @@ class WhoopAPIService:
                             continue
                         else:
                             return None
-                    
+
             except httpx.TimeoutException:
-                logger.warning("API request timeout", 
+                logger.warning("API request timeout",
                              endpoint=endpoint,
                              attempt=attempt + 1,
-                             user_id=user_id)
-                
+                             supabase_user_id=supabase_user_id)
+
                 if attempt < self.max_retries:
                     delay = self.retry_base_delay * (2 ** attempt)
                     await asyncio.sleep(delay)
                     continue
                 else:
                     return None
-                    
+
             except Exception as e:
-                logger.error("Unexpected error in API request", 
+                logger.error("Unexpected error in API request",
                            endpoint=endpoint,
-                           user_id=user_id,
+                           supabase_user_id=supabase_user_id,
                            error=str(e),
                            attempt=attempt + 1)
                 
@@ -290,33 +295,37 @@ class WhoopAPIService:
     ) -> WhoopSleepCollection:
         """
         Fetch sleep data from API with UUID identifiers
-        
+
         Args:
-            user_id: User identifier
+            user_id: User identifier (Supabase UUID as string)
             start_date: Start date in ISO format (currently ignored due to v2 API issue)
             end_date: End date in ISO format (currently ignored due to v2 API issue)
             next_token: Pagination token
             limit: Number of records to retrieve
-            
+
         Returns:
             WhoopSleepCollection with sleep records
         """
         try:
-            # TEMP FIX: Date parameters cause 404s in WHOOP v2 API
-            # Using only limit parameter until date format issue is resolved
+            # Convert string UUID to UUID type
+            supabase_user_uuid = UUID(user_id)
+
+            # NOTE: WHOOP v2 sleep endpoint doesn't reliably support date filtering
+            # Using limit only to get most recent records
+            # WHOOP API max limit is 25
             params = {
-                "limit": min(limit, 50)
+                "limit": min(limit, 25)
             }
-            
+
             if next_token:
                 params["nextToken"] = next_token
-            
-            cache_key = f"sleep_{user_id}_{start_date}_{end_date}_{limit}" if not next_token else None
-            
+
+            cache_key = f"sleep_{user_id}_recent_{limit}" if not next_token else None
+
             response_data = await self._make_request(
                 method="GET",
                 endpoint="activity/sleep",
-                user_id=user_id,
+                supabase_user_id=supabase_user_uuid,
                 params=params,
                 cache_key=cache_key
             )
@@ -334,6 +343,9 @@ class WhoopAPIService:
                                      record_id=record_id, user_id=user_id)
                         continue
                     
+                    # Extract score data (nested in v2 API response)
+                    score_data = record.get("score", {}) or {}
+
                     # Create v2 sleep data model using actual API field names
                     sleep_data = WhoopSleepData(
                         id=record_id,
@@ -341,10 +353,11 @@ class WhoopAPIService:
                         user_id=record["user_id"],  # API returns "user_id" as int
                         start=record["start"],
                         end=record["end"],
-                        timezone_offset=record.get("timezoneOffset"),
-                        total_sleep_time_milli=record.get("totalSleepTimeMilli"),
-                        time_in_bed_milli=record.get("timeInBedMilli"),
-                        cycle_id=record.get("cycleId"),
+                        timezone_offset=record.get("timezone_offset"),
+                        # Extract from nested score object if available
+                        total_sleep_time_milli=score_data.get("total_sleep_time_milli") or score_data.get("stage_summary", {}).get("total_in_bed_time_milli"),
+                        time_in_bed_milli=score_data.get("stage_summary", {}).get("total_in_bed_time_milli"),
+                        cycle_id=record.get("cycle_id"),
                         raw_data=record
                     )
                     
@@ -367,17 +380,8 @@ class WhoopAPIService:
                        count=len(sleep_records),
                        has_next_token=bool(collection.next_token))
             
-            # Store raw data in database
-            raw_records = response_data.get("records", [])
-            if raw_records:
-                await self.raw_storage.store_whoop_data(
-                    user_id=user_id,
-                    data_type="sleep",
-                    records=raw_records,
-                    next_token=response_data.get("next_token"),
-                    api_endpoint="activity/sleep"
-                )
-            
+            # Note: Raw data storage moved to get_comprehensive_data to avoid duplicates during pagination
+
             return collection
             
         except Exception as e:
@@ -395,33 +399,37 @@ class WhoopAPIService:
     ) -> WhoopWorkoutCollection:
         """
         Fetch workout data from API with UUID identifiers
-        
+
         Args:
-            user_id: User identifier
+            user_id: User identifier (Supabase UUID as string)
             start_date: Start date in ISO format
             end_date: End date in ISO format
             next_token: Pagination token
             limit: Number of records to retrieve
-            
+
         Returns:
             WhoopWorkoutCollection with workout records
         """
         try:
-            # TEMP FIX: Date parameters cause 404s in WHOOP v2 API
-            # Using only limit parameter until date format issue is resolved
+            # Convert string UUID to UUID type
+            supabase_user_uuid = UUID(user_id)
+
+            # NOTE: WHOOP v2 workout endpoint doesn't reliably support date filtering
+            # Using limit only to get most recent records
+            # WHOOP API max limit is 25
             params = {
-                "limit": min(limit, 50)
+                "limit": min(limit, 25)
             }
-            
+
             if next_token:
                 params["nextToken"] = next_token
-            
-            cache_key = f"workout_{user_id}_{start_date}_{end_date}_{limit}" if not next_token else None
-            
+
+            cache_key = f"workout_{user_id}_recent_{limit}" if not next_token else None
+
             response_data = await self._make_request(
                 method="GET",
                 endpoint="activity/workout",
-                user_id=user_id,
+                supabase_user_id=supabase_user_uuid,
                 params=params,
                 cache_key=cache_key
             )
@@ -439,21 +447,25 @@ class WhoopAPIService:
                                      record_id=record_id, user_id=user_id)
                         continue
                     
-                    # Create v2 workout data model
+                    # Extract score data (nested in v2 API response)
+                    score_data = record.get("score", {}) or {}
+
+                    # Create v2 workout data model with proper field extraction
                     workout_data = WhoopWorkoutData(
                         id=record_id,
-                        activity_v1_id=record.get("v1_id"),  # API returns "v1_id" 
+                        activity_v1_id=record.get("v1_id"),  # API returns "v1_id"
                         user_id=record["user_id"],  # API returns "user_id" as int
                         sport_id=record["sport_id"],  # API returns "sport_id" not "sportId"
                         sport_name=record.get("sport_name"),  # API returns "sport_name"
                         start=record["start"],
                         end=record["end"],
-                        timezone_offset=record.get("timezoneOffset"),
-                        strain_score=record.get("strain"),
-                        average_heart_rate=record.get("averageHeartRate"),
-                        max_heart_rate=record.get("maxHeartRate"),
-                        calories_burned=record.get("calories"),
-                        distance_meters=record.get("distanceMeters"),
+                        timezone_offset=record.get("timezone_offset"),
+                        # Extract from nested score object
+                        strain_score=score_data.get("strain"),
+                        average_heart_rate=score_data.get("average_heart_rate"),
+                        max_heart_rate=score_data.get("max_heart_rate"),
+                        calories_burned=score_data.get("kilojoule"),  # API uses kilojoule
+                        distance_meters=score_data.get("distance_meter"),
                         raw_data=record
                     )
                     
@@ -476,17 +488,8 @@ class WhoopAPIService:
                        count=len(workout_records),
                        has_next_token=bool(collection.next_token))
             
-            # Store raw data in database
-            raw_records = response_data.get("records", [])
-            if raw_records:
-                await self.raw_storage.store_whoop_data(
-                    user_id=user_id,
-                    data_type="workout",
-                    records=raw_records,
-                    next_token=response_data.get("next_token"),
-                    api_endpoint="activity/workout"
-                )
-            
+            # Note: Raw data storage moved to get_comprehensive_data to avoid duplicates during pagination
+
             return collection
             
         except Exception as e:
@@ -504,43 +507,68 @@ class WhoopAPIService:
     ) -> WhoopRecoveryCollection:
         """
         Fetch recovery data from API (structure unchanged from v1)
-        
+
         Args:
-            user_id: User identifier
+            user_id: User identifier (Supabase UUID as string)
             start_date: Start date in ISO format
             end_date: End date in ISO format
             next_token: Pagination token
             limit: Number of records to retrieve
-            
+
         Returns:
             WhoopRecoveryCollection with recovery records
         """
         try:
-            # TEMP FIX: Date parameters cause 404s in WHOOP v2 API
-            # Using only limit parameter until date format issue is resolved
+            # Convert string UUID to UUID type
+            supabase_user_uuid = UUID(user_id)
+
+            # Build query parameters
+            # Note: WHOOP v2 API uses ISO 8601 format (YYYY-MM-DDTHH:MM:SS.sssZ)
+            # WHOOP API max limit is 25
             params = {
-                "limit": min(limit, 50)
+                "limit": min(limit, 25),
+                "start": start_date,  # ISO format string
+                "end": end_date      # ISO format string
             }
-            
+
             if next_token:
                 params["nextToken"] = next_token
-            
+
             cache_key = f"recovery_{user_id}_{start_date}_{end_date}_{limit}" if not next_token else None
-            
+
+            # Try recovery endpoint - may need to use cycle endpoint instead in v2
             response_data = await self._make_request(
                 method="GET",
-                endpoint="recovery",
-                user_id=user_id,
+                endpoint="recovery",  # Try /v2/recovery first
+                supabase_user_id=supabase_user_uuid,
                 params=params,
                 cache_key=cache_key
             )
-            
+
+            # If 404, recovery might not have standalone endpoint in v2
+            # May need to fetch through cycles instead
+
             if not response_data:
+                logger.warning("⚠️ No recovery response data from API",
+                             user_id=user_id,
+                             endpoint="recovery",
+                             note="May need to fetch recovery through /v2/cycle endpoint instead")
                 return WhoopRecoveryCollection()
-            
+
+            logger.info("📦 Processing recovery API response",
+                       user_id=user_id,
+                       records_count=len(response_data.get("records", [])),
+                       has_next_token=bool(response_data.get("next_token")))
+
             recovery_records = []
             for record in response_data.get("records", []):
                 try:
+                    logger.info("🔍 Parsing recovery record",
+                                user_id=user_id,
+                                cycle_id=record.get("cycle_id"),
+                                has_score=bool(record.get("score")),
+                                has_created_at=bool(record.get("created_at")))
+
                     recovery_data = WhoopRecoveryData(
                         cycle_id=record["cycle_id"],  # API returns "cycle_id" as int
                         user_id=record["user_id"],  # API returns "user_id" as int
@@ -551,14 +579,21 @@ class WhoopAPIService:
                         recorded_at=record.get("created_at"),
                         raw_data=record
                     )
-                    
+
                     recovery_records.append(recovery_data)
-                    
+                    logger.info("✅ Successfully parsed recovery record",
+                               user_id=user_id,
+                               cycle_id=record.get("cycle_id"))
+
                 except Exception as parse_error:
-                    logger.warning("Failed to parse v2 recovery record", 
+                    logger.warning("❌ Failed to parse v2 recovery record",
                                  user_id=user_id,
-                                 cycle_id=record.get("cycle", {}).get("id"),
-                                 error=str(parse_error))
+                                 cycle_id=record.get("cycle_id"),
+                                 has_cycle_id=bool(record.get("cycle_id")),
+                                 has_user_id=bool(record.get("user_id")),
+                                 has_created_at=bool(record.get("created_at")),
+                                 error=str(parse_error),
+                                 error_type=type(parse_error).__name__)
             
             collection = WhoopRecoveryCollection(
                 records=recovery_records,
@@ -571,17 +606,8 @@ class WhoopAPIService:
                        count=len(recovery_records),
                        has_next_token=bool(collection.next_token))
             
-            # Store raw data in database
-            raw_records = response_data.get("records", [])
-            if raw_records:
-                await self.raw_storage.store_whoop_data(
-                    user_id=user_id,
-                    data_type="recovery",
-                    records=raw_records,
-                    next_token=response_data.get("next_token"),
-                    api_endpoint="recovery"
-                )
-            
+            # Note: Raw data storage moved to get_comprehensive_data to avoid duplicates during pagination
+
             return collection
             
         except Exception as e:
@@ -707,10 +733,10 @@ class WhoopAPIService:
             WhoopDataResponse with all health data
         """
         try:
-            # Calculate date range
-            end_date = datetime.utcnow()
+            # Calculate date range (use timezone-aware datetime for WHOOP API)
+            end_date = datetime.now(timezone.utc)
             start_date = end_date - timedelta(days=days_back)
-            
+
             start_iso = start_date.isoformat()
             end_iso = end_date.isoformat()
             
@@ -718,10 +744,36 @@ class WhoopAPIService:
                        user_id=user_id,
                        date_range=f"{start_date.date()} to {end_date.date()}")
             
-            # Fetch all data types concurrently
-            sleep_collection = await self.get_sleep_data(user_id, start_iso, end_iso, limit=50)
-            workout_collection = await self.get_workout_data(user_id, start_iso, end_iso, limit=50)
-            recovery_collection = await self.get_recovery_data(user_id, start_iso, end_iso, limit=50)
+            # Fetch all data types concurrently (limit based on days_back)
+            # Sleep, recovery, workout: fetch directly from API
+            # Cycle: skip for now (returns 404)
+            limit = min(days_back, 25)  # WHOOP API max is 25
+
+            # Fetch sleep, recovery, and workout in parallel
+            sleep_collection = await self.get_sleep_data(user_id, start_iso, end_iso, limit=limit)
+            recovery_collection = await self.get_recovery_data(user_id, start_iso, end_iso, limit=limit)
+
+            # For workouts, fetch max 25 records (no pagination)
+            workout_collection = await self.get_workout_data(user_id, start_iso, end_iso, limit=25)
+
+            # Try to fetch cycle data (may return 404 if endpoint not available)
+            logger.info("📊 Attempting to fetch cycle data",
+                       user_id=user_id,
+                       start_iso=start_iso,
+                       end_iso=end_iso,
+                       limit=limit * 2)
+
+            cycle_collection = await self.get_cycle_data(user_id, start_iso, end_iso, limit=limit * 2)
+
+            if not cycle_collection or not cycle_collection.data:
+                logger.warning("⚠️ Cycle data not available (endpoint may not be accessible)",
+                             user_id=user_id,
+                             has_collection=bool(cycle_collection))
+                cycle_collection = WhoopCycleCollection(data=[], next_token=None)
+            else:
+                logger.info("✅ Retrieved cycle data",
+                           user_id=user_id,
+                           cycle_count=len(cycle_collection.data))
             
             # Handle pagination if requested
             if include_all_pages:
@@ -756,21 +808,79 @@ class WhoopAPIService:
                 sleep_data=sleep_collection.records,
                 workout_data=workout_collection.records,
                 recovery_data=recovery_collection.records,
+                cycle_data=cycle_collection.data if cycle_collection else [],
                 total_records=(
-                    len(sleep_collection.records) + 
-                    len(workout_collection.records) + 
-                    len(recovery_collection.records)
+                    len(sleep_collection.records) +
+                    len(workout_collection.records) +
+                    len(recovery_collection.records) +
+                    (len(cycle_collection.data) if cycle_collection and cycle_collection.data else 0)
                 ),
                 api_version="v2"
             )
-            
-            logger.info("✅ Comprehensive v2 data fetch completed", 
+
+            logger.info("✅ Comprehensive v2 data fetch completed",
                        user_id=user_id,
                        sleep_count=len(response.sleep_data),
                        workout_count=len(response.workout_data),
                        recovery_count=len(response.recovery_data),
+                       cycle_count=len(response.cycle_data),
                        total_records=response.total_records)
-            
+
+            # Store raw data in whoop_raw_data table (one entry per data type)
+            # Extract raw_data from each record to store as array
+            if sleep_collection.records:
+                sleep_raw = [s.raw_data for s in sleep_collection.records if s.raw_data]
+                logger.info("💾 Storing sleep raw data to whoop_raw_data table",
+                           user_id=user_id,
+                           count=len(sleep_raw))
+                await self.raw_storage.store_whoop_data(
+                    user_id=user_id,
+                    data_type="sleep",
+                    records=sleep_raw,
+                    api_endpoint="activity/sleep"
+                )
+
+            if workout_collection.records:
+                workout_raw = [w.raw_data for w in workout_collection.records if w.raw_data]
+                logger.info("💾 Storing workout raw data to whoop_raw_data table",
+                           user_id=user_id,
+                           count=len(workout_raw))
+                await self.raw_storage.store_whoop_data(
+                    user_id=user_id,
+                    data_type="workout",
+                    records=workout_raw,
+                    api_endpoint="activity/workout"
+                )
+
+            if recovery_collection.records:
+                recovery_raw = [r.raw_data for r in recovery_collection.records if r.raw_data]
+                logger.info("💾 Storing recovery raw data to whoop_raw_data table",
+                           user_id=user_id,
+                           count=len(recovery_raw))
+                await self.raw_storage.store_whoop_data(
+                    user_id=user_id,
+                    data_type="recovery",
+                    records=recovery_raw,
+                    api_endpoint="recovery"
+                )
+            else:
+                logger.warning("⚠️ No recovery data to store in raw_data table",
+                             user_id=user_id,
+                             recovery_collection_empty=len(recovery_collection.records) == 0)
+
+            # Store cycle raw data
+            if cycle_collection and cycle_collection.data:
+                cycle_raw = [c.raw_data for c in cycle_collection.data if hasattr(c, 'raw_data') and c.raw_data]
+                logger.info("💾 Storing cycle raw data to whoop_raw_data table",
+                           user_id=user_id,
+                           count=len(cycle_raw))
+                await self.raw_storage.store_whoop_data(
+                    user_id=user_id,
+                    data_type="cycle",
+                    records=cycle_raw,
+                    api_endpoint="cycle"
+                )
+
             return response
             
         except Exception as e:
@@ -788,31 +898,37 @@ class WhoopAPIService:
     ) -> Optional[WhoopCycleCollection]:
         """
         Get WHOOP cycle data for user
-        
+
         Args:
-            user_id: User identifier
+            user_id: User identifier (Supabase UUID as string)
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
             next_token: Pagination token
             limit: Number of records to fetch (max 50)
-            
+
         Returns:
             WhoopCycleCollection or None if error
         """
         try:
-            # TEMP FIX: Date parameters cause 404s in WHOOP v2 API
-            # Using only limit parameter until date format issue is resolved
+            # Convert string UUID to UUID type
+            supabase_user_uuid = UUID(user_id)
+
+            # Build query parameters
+            # Note: WHOOP v2 API uses ISO 8601 format (YYYY-MM-DDTHH:MM:SS.sssZ)
+            # WHOOP API max limit is 25
             params = {
-                "limit": min(limit, 50)
+                "limit": min(limit, 25),
+                "start": start_date,  # ISO format string
+                "end": end_date      # ISO format string
             }
-            
+
             if next_token:
                 params["nextToken"] = next_token
-            
+
             response_data = await self._make_request(
                 method="GET",
                 endpoint="cycle",
-                user_id=user_id,
+                supabase_user_id=supabase_user_uuid,
                 params=params
             )
             
@@ -844,17 +960,8 @@ class WhoopAPIService:
             logger.info("✅ Retrieved cycle data", 
                        user_id=user_id, count=len(cycles))
             
-            # Store raw data in database
-            raw_records = response_data.get("records", [])
-            if raw_records:
-                await self.raw_storage.store_whoop_data(
-                    user_id=user_id,
-                    data_type="cycle",
-                    records=raw_records,
-                    next_token=response_data.get("next_token"),
-                    api_endpoint="cycle"
-                )
-            
+            # Note: Raw data storage moved to get_comprehensive_data to avoid duplicates during pagination
+
             return collection
             
         except Exception as e:

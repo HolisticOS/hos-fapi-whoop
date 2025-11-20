@@ -46,6 +46,7 @@ class WhoopRawDataStorage:
                 whoop_user_id = records[0].get('user_id')
             
             # Prepare data for storage
+            current_time = datetime.now(timezone.utc)
             storage_data = {
                 'user_id': user_id,
                 'whoop_user_id': whoop_user_id,
@@ -54,9 +55,36 @@ class WhoopRawDataStorage:
                 'record_count': len(records),
                 'next_token': next_token,
                 'api_endpoint': api_endpoint,
-                'fetched_at': datetime.now(timezone.utc).isoformat()
+                'fetched_at': current_time.isoformat()
             }
-            
+
+            # Delete existing entries for this user+data_type from today to prevent duplicates
+            # This ensures we only keep the latest sync for each day
+            today_start = current_time.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+            try:
+                delete_result = self.supabase.table(self.table_name)\
+                    .delete()\
+                    .eq('user_id', user_id)\
+                    .eq('data_type', data_type)\
+                    .gte('fetched_at', today_start)\
+                    .execute()
+
+                if delete_result.data:
+                    logger.info(
+                        "🧹 Deleted previous sync from today to prevent duplicates",
+                        user_id=user_id,
+                        data_type=data_type,
+                        deleted_count=len(delete_result.data)
+                    )
+            except Exception as del_error:
+                logger.warning(
+                    "⚠️ Could not delete previous sync (may not exist)",
+                    user_id=user_id,
+                    data_type=data_type,
+                    error=str(del_error)
+                )
+
             # Store in Supabase
             result = self.supabase.table(self.table_name).insert(storage_data).execute()
             

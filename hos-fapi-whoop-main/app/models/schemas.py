@@ -77,8 +77,8 @@ class WhoopSleepData(BaseModel):
     # Sleep quality metrics
     sleep_score: Optional[WhoopSleepScore] = None
     
-    # Cycle reference
-    cycle_id: Optional[str] = Field(None, description="Reference to cycle ID")
+    # Cycle reference (int in v2 API)
+    cycle_id: Optional[int] = Field(None, description="Reference to cycle ID")
     
     # Raw data storage
     raw_data: Dict[str, Any] = Field(default_factory=dict, description="Complete API response")
@@ -146,7 +146,7 @@ class WhoopWorkoutData(BaseModel):
     strain_score: Optional[float] = Field(None, description="Strain score")
     average_heart_rate: Optional[int] = Field(None, description="Average heart rate")
     max_heart_rate: Optional[int] = Field(None, description="Maximum heart rate")
-    calories_burned: Optional[int] = Field(None, description="Calories burned")
+    calories_burned: Optional[float] = Field(None, description="Calories burned (kilojoules from API)")
     distance_meters: Optional[float] = Field(None, description="Distance in meters")
     altitude_gain_meters: Optional[float] = Field(None, description="Altitude gain in meters")
     
@@ -379,17 +379,8 @@ class WhoopMigrationMapping(BaseModel):
             raise ValueError(f"Invalid v2 UUID: {v}")
         return v
 
-class WhoopDataResponse(BaseModel):
-    """Unified response model for v2 data with pagination"""
-    sleep_data: List[WhoopSleepData] = []
-    workout_data: List[WhoopWorkoutData] = []
-    recovery_data: List[WhoopRecoveryData] = []
-    next_token: Optional[str] = None
-    total_records: int = 0
-    api_version: str = "v2"
-
 # =============================================================================
-# Webhook Models
+# Cycle Models (defined before WhoopDataResponse to avoid forward reference)
 # =============================================================================
 
 class WhoopCycleData(BaseModel):
@@ -409,6 +400,24 @@ class WhoopCycleCollection(BaseModel):
     """Collection of WHOOP cycles"""
     data: List[WhoopCycleData] = Field(default_factory=list)
     next_token: Optional[str] = None
+
+# =============================================================================
+# Unified Response Model
+# =============================================================================
+
+class WhoopDataResponse(BaseModel):
+    """Unified response model for v2 data with pagination"""
+    sleep_data: List[WhoopSleepData] = []
+    workout_data: List[WhoopWorkoutData] = []
+    recovery_data: List[WhoopRecoveryData] = []
+    cycle_data: List[WhoopCycleData] = []
+    next_token: Optional[str] = None
+    total_records: int = 0
+    api_version: str = "v2"
+
+# =============================================================================
+# Webhook Models
+# =============================================================================
 
 class WhoopProfileData(BaseModel):
     """WHOOP Profile Data"""

@@ -1,29 +1,29 @@
 # Core Framework
-fastapi
-uvicorn[standard]
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
 
-# Database
-supabase
-pydantic
+# Database & Authentication
+supabase>=2.0.0  # REST API client (includes gotrue as dependency)
+pydantic>=2.0.0
 
 # HTTP Client
-httpx
-aiohttp
+httpx>=0.25.0
+aiohttp>=3.9.0
 
 # Security & Auth
-python-jose[cryptography]
-python-multipart
-gotrue
+python-jose[cryptography]>=3.3.0
+python-multipart>=0.0.6
 
 # Environment
-python-dotenv
-python-dateutil
+python-dotenv>=1.0.0
+python-dateutil>=2.8.0
+
 # Caching
-cachetools
+cachetools>=5.3.0
 
 # Logging
-structlog
+structlog>=23.0.0
 
 # Development/Testing
-pytest
-pytest-asyncio
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
