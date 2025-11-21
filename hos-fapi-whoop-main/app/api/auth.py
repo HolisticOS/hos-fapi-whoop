@@ -1,16 +1,13 @@
 """
 WHOOP OAuth Authentication API Endpoints
 Complete automated OAuth flow with database token storage
-Integrates with Supabase JWT authentication
 """
 
-from fastapi import APIRouter, HTTPException, Query, Request, Depends
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse, HTMLResponse
-from uuid import UUID
 import structlog
 
 from app.services.auth_service import WhoopAuthService
-from app.core.auth import get_current_user
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
@@ -19,173 +16,194 @@ router = APIRouter()
 auth_service = WhoopAuthService()
 
 @router.post("/login")
-async def initiate_login(current_user: str = Depends(get_current_user)):
+async def initiate_login(user_id: str):
     """
-    Initiate WHOOP OAuth flow for authenticated Supabase user
-
-    Requires:
-        Authorization: Bearer <supabase_jwt_token>
-
+    Initiate WHOOP OAuth flow for a user
+    
+    Args:
+        user_id: Your internal user identifier
+    
     Returns:
         Authorization URL for user to complete OAuth flow
     """
     try:
-        # Convert string UUID to UUID type
-        user_uuid = UUID(current_user)
-
-        oauth_data = await auth_service.initiate_oauth(user_uuid)
-
+        oauth_data = await auth_service.initiate_oauth(user_id)
+        
         return {
             "success": True,
             "auth_url": oauth_data["auth_url"],
-            "message": "Redirect user to auth_url to complete WHOOP OAuth flow",
-            "user_id": current_user
+            "message": "Redirect user to auth_url to complete OAuth flow",
+            "user_id": user_id
         }
-
-    except ValueError as e:
-        logger.error("Invalid UUID format", user_id=current_user, error=str(e))
-        raise HTTPException(status_code=400, detail="Invalid user ID format")
+        
     except Exception as e:
-        logger.error("Login initiation failed", user_id=current_user, error=str(e))
+        logger.error("Login initiation failed", user_id=user_id, error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to initiate login: {str(e)}")
 
 @router.get("/callback")
 async def oauth_callback(code: str = Query(...), state: str = Query(...)):
     """
-    Handle OAuth callback from WHOOP (public endpoint)
-
-    This endpoint receives the authorization code and exchanges it for tokens.
-    Links WHOOP account to authenticated Supabase user.
+    Handle OAuth callback from WHOOP
+    
+    This endpoint receives the authorization code and exchanges it for tokens
     """
     try:
         result = await auth_service.handle_callback(code, state)
-
+        
         # Return success page
-        success_html = f"""
+        success_html = """
         <html>
             <head><title>WHOOP Authentication Success</title></head>
             <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-                <h1>🎉 WHOOP Account Linked!</h1>
-                <p>Your WHOOP account has been successfully linked.</p>
-                <p>WHOOP User ID: <strong>{result['whoop_user_id']}</strong></p>
+                <h1>🎉 Authentication Successful!</h1>
+                <p>Your WHOOP account has been connected successfully.</p>
                 <p>You can now access your health data through the app.</p>
                 <p><em>You can close this window and return to the app.</em></p>
             </body>
         </html>
         """
-
+        
         return HTMLResponse(content=success_html)
-
+        
     except Exception as e:
         logger.error("OAuth callback failed", code=code[:10], state=state[:10], error=str(e))
-
+        
         error_html = f"""
         <html>
             <head><title>WHOOP Authentication Error</title></head>
             <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
                 <h1>❌ Authentication Failed</h1>
-                <p>There was an error linking your WHOOP account.</p>
+                <p>There was an error connecting to WHOOP.</p>
                 <p>Error: {str(e)}</p>
                 <p>Please try again or contact support.</p>
             </body>
         </html>
         """
-
+        
         return HTMLResponse(content=error_html, status_code=400)
 
-@router.get("/status")
-async def get_auth_status(current_user: str = Depends(get_current_user)):
+@router.get("/status/{user_id}")
+async def get_auth_status(user_id: str):
     """
-    Get WHOOP authentication status for authenticated Supabase user
-
-    Requires:
-        Authorization: Bearer <supabase_jwt_token>
-
+    Get authentication status for a user
+    
+    Args:
+        user_id: Your internal user identifier
+    
     Returns:
-        WHOOP linkage status and token info
+        User authentication status and token info
     """
     try:
-        # Convert string UUID to UUID type
-        user_uuid = UUID(current_user)
-
-        user_info = await auth_service.get_user_info(user_uuid)
-
+        user_info = await auth_service.get_user_info(user_id)
+        
         if not user_info:
             return {
-                "supabase_user_id": current_user,
-                "whoop_linked": False,
+                "user_id": user_id,
                 "is_authenticated": False,
-                "message": "WHOOP account not linked. Use POST /auth/login to link your WHOOP account."
+                "message": "User not found or not authenticated"
             }
-
+        
         return user_info
-
-    except ValueError as e:
-        logger.error("Invalid UUID format", user_id=current_user, error=str(e))
-        raise HTTPException(status_code=400, detail="Invalid user ID format")
+        
     except Exception as e:
-        logger.error("Failed to get auth status", user_id=current_user, error=str(e))
+        logger.error("Failed to get auth status", user_id=user_id, error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to get auth status: {str(e)}")
 
-@router.post("/refresh")
-async def refresh_user_token(current_user: str = Depends(get_current_user)):
+@router.post("/refresh/{user_id}")
+async def refresh_user_token(user_id: str):
     """
-    Manually refresh WHOOP access token for authenticated user
+    Manually refresh a user's access token
 
-    Requires:
-        Authorization: Bearer <supabase_jwt_token>
+    Args:
+        user_id: Your internal user identifier
 
     Returns:
         Token refresh status
     """
     try:
-        # Convert string UUID to UUID type
-        user_uuid = UUID(current_user)
-
         # Get valid token (this will auto-refresh if needed)
-        token = await auth_service.get_valid_token(user_uuid)
+        token = await auth_service.get_valid_token(user_id)
 
         if token:
             return {
                 "success": True,
-                "message": "WHOOP token refreshed successfully",
-                "user_id": current_user
+                "message": "Token refreshed successfully",
+                "user_id": user_id
             }
         else:
             return {
                 "success": False,
-                "message": "Could not refresh token - user may need to re-link WHOOP account",
-                "user_id": current_user
+                "message": "Could not refresh token - user may need to re-authenticate",
+                "user_id": user_id
             }
 
-    except ValueError as e:
-        logger.error("Invalid UUID format", user_id=current_user, error=str(e))
-        raise HTTPException(status_code=400, detail="Invalid user ID format")
     except Exception as e:
-        logger.error("Token refresh failed", user_id=current_user, error=str(e))
+        logger.error("Token refresh failed", user_id=user_id, error=str(e))
         raise HTTPException(status_code=500, detail=f"Token refresh failed: {str(e)}")
+
+@router.post("/disconnect")
+async def disconnect_user():
+    """
+    Disconnect a user's WHOOP integration
+    Sets is_active to False in the database
+
+    Returns:
+        Disconnect status
+    """
+    try:
+        # TODO: Extract user_id from JWT token in Authorization header
+        # For now, we'll need to pass user_id in request body
+        # This should be updated to use JWT authentication
+
+        raise HTTPException(
+            status_code=501,
+            detail="Disconnect endpoint requires user_id. Use POST /auth/disconnect/{user_id} instead"
+        )
+
+    except Exception as e:
+        logger.error("Disconnect failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Disconnect failed: {str(e)}")
+
+@router.post("/disconnect/{user_id}")
+async def disconnect_user_by_id(user_id: str):
+    """
+    Disconnect a user's WHOOP integration by user_id
+    Sets is_active to False in the database
+
+    Args:
+        user_id: Your internal user identifier
+
+    Returns:
+        Disconnect status
+    """
+    try:
+        result = await auth_service.disconnect_user(user_id)
+        return result
+
+    except Exception as e:
+        logger.error("Disconnect failed", user_id=user_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Disconnect failed: {str(e)}")
 
 @router.get("/")
 async def auth_info():
     """Get information about the authentication system"""
     return {
-        "service": "WHOOP OAuth 2.0 Authentication with Supabase",
+        "service": "WHOOP OAuth 2.0 Authentication",
         "version": "v2-only",
-        "authentication": "Supabase JWT (Bearer token required)",
         "endpoints": {
-            "login": "POST /auth/login - Initiate WHOOP OAuth flow (requires Supabase auth)",
-            "callback": "GET /auth/callback - OAuth callback handler (public)",
-            "status": "GET /auth/status - Check WHOOP linkage status (requires Supabase auth)",
-            "refresh": "POST /auth/refresh - Refresh WHOOP token (requires Supabase auth)"
+            "login": "POST /auth/login - Initiate OAuth flow",
+            "callback": "GET /auth/callback - OAuth callback handler",
+            "status": "GET /auth/status/{user_id} - Check auth status",
+            "refresh": "POST /auth/refresh/{user_id} - Refresh token",
+            "disconnect": "POST /auth/disconnect/{user_id} - Disconnect user"
         },
         "flow": [
-            "1. User authenticates with Supabase directly (same as Flutter app)",
-            "2. POST /auth/login with Authorization: Bearer <supabase_jwt>",
-            "3. Redirect user to returned auth_url",
-            "4. User completes OAuth on WHOOP",
-            "5. WHOOP redirects to /auth/callback",
-            "6. WHOOP account linked to Supabase user",
-            "7. Use data endpoints with Supabase JWT"
-        ],
-        "note": "All endpoints except /callback require Authorization: Bearer <supabase_jwt_token> header"
+            "1. POST /auth/login with user_id",
+            "2. Redirect user to returned auth_url",
+            "3. User completes OAuth on WHOOP",
+            "4. WHOOP redirects to /auth/callback",
+            "5. Tokens are stored automatically",
+            "6. Use API endpoints with stored tokens",
+            "7. POST /auth/disconnect/{user_id} to disconnect"
+        ]
     }

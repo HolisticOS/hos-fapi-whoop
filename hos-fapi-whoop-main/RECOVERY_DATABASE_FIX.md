@@ -33,7 +33,11 @@ data = {
 
 This converts 70.0 → 70, 94.0 → 94 before database insertion.
 
-### Part 2: Database Schema (Migration Required)
+**Result**: Heart rate and SpO2 values can now be stored in INTEGER columns.
+
+### Part 2: Database Schema ⚠️ (TODO - Run SQL Migration)
+
+Still need to fix `recovery_score` column type in the database.
 
 ## Database Schema Issue
 

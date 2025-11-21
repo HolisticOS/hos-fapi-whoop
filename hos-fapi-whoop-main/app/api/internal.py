@@ -113,194 +113,13 @@ async def get_health_metrics(
         )
 
 
-@router.get("/data/recovery")
-async def get_recovery_data(
-    current_user: str = Depends(get_current_user),
-    days: int = Query(7, ge=1, le=30, description="Days of historical data")
-):
-    """
-    Get authenticated user's recovery data from WHOOP API
+# OLD ENDPOINTS - COMMENTED OUT (fetch from WHOOP API, replaced by database-fetching endpoints below)
+# These endpoints are replaced by the new /data/sleep, /data/workout, /data/recovery, /data/cycle endpoints
+# that fetch from the database instead of the WHOOP API
 
-    Requires:
-        Authorization: Bearer <supabase_jwt_token>
-
-    Args:
-        days: Number of days of recovery data
-
-    Returns:
-        Recovery data from WHOOP API
-    """
-    try:
-        # Convert string UUID to UUID type
-        user_uuid = UUID(current_user)
-
-        logger.info("💚 Getting recovery data", user_id=current_user, days=days)
-
-        # Get recovery data from WHOOP API
-        end_date = datetime.now(timezone.utc)
-        start_date = end_date - timedelta(days=days)
-        start_iso = start_date.isoformat()
-        end_iso = end_date.isoformat()
-
-        # Convert UUID to string for API service
-        recovery_collection = await whoop_client.get_recovery_data(str(user_uuid), start_iso, end_iso, limit=10)
-
-        logger.info("✅ Recovery data retrieved",
-                   user_id=current_user,
-                   recovery_count=len(recovery_collection.records))
-
-        return {
-            "user_id": current_user,
-            "date_range": {
-                "start": start_date.isoformat(),
-                "end": end_date.isoformat(),
-                "days": days
-            },
-            "recovery_data": [r.model_dump() if hasattr(r, 'model_dump') else r for r in recovery_collection.records],
-            "summary": {
-                "recovery_records": len(recovery_collection.records),
-                "has_next_page": bool(recovery_collection.next_token)
-            },
-            "retrieved_at": datetime.utcnow().isoformat()
-        }
-
-    except ValueError as e:
-        logger.error("Invalid UUID format", user_id=current_user, error=str(e))
-        raise HTTPException(status_code=400, detail="Invalid user ID format")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("❌ Failed to get recovery data", user_id=current_user, error=str(e))
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve recovery data: {str(e)}"
-        )
-
-
-@router.get("/data/sleep")
-async def get_sleep_data(
-    current_user: str = Depends(get_current_user),
-    days: int = Query(7, ge=1, le=30, description="Days of historical data")
-):
-    """
-    Get authenticated user's sleep data from WHOOP API
-
-    Requires:
-        Authorization: Bearer <supabase_jwt_token>
-
-    Args:
-        days: Number of days of sleep data
-
-    Returns:
-        Sleep data from WHOOP API
-    """
-    try:
-        # Convert string UUID to UUID type
-        user_uuid = UUID(current_user)
-
-        logger.info("😴 Getting sleep data", user_id=current_user, days=days)
-
-        end_date = datetime.now(timezone.utc)
-        start_date = end_date - timedelta(days=days)
-        start_iso = start_date.isoformat()
-        end_iso = end_date.isoformat()
-
-        # Convert UUID to string for API service
-        sleep_collection = await whoop_client.get_sleep_data(str(user_uuid), start_iso, end_iso, limit=10)
-
-        logger.info("✅ Sleep data retrieved",
-                   user_id=current_user,
-                   records_count=len(sleep_collection.records))
-
-        return {
-            "user_id": current_user,
-            "date_range": {
-                "start": start_date.isoformat(),
-                "end": end_date.isoformat(),
-                "days": days
-            },
-            "sleep_data": [s.model_dump() if hasattr(s, 'model_dump') else s for s in sleep_collection.records],
-            "summary": {
-                "sleep_records": len(sleep_collection.records),
-                "has_next_page": bool(sleep_collection.next_token)
-            },
-            "retrieved_at": datetime.utcnow().isoformat()
-        }
-
-    except ValueError as e:
-        logger.error("Invalid UUID format", user_id=current_user, error=str(e))
-        raise HTTPException(status_code=400, detail="Invalid user ID format")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("❌ Failed to get sleep data", user_id=current_user, error=str(e))
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve sleep data: {str(e)}"
-        )
-
-
-@router.get("/data/workouts")
-async def get_workout_data(
-    current_user: str = Depends(get_current_user),
-    days: int = Query(7, ge=1, le=30, description="Days of historical data")
-):
-    """
-    Get authenticated user's workout data from WHOOP API
-
-    Requires:
-        Authorization: Bearer <supabase_jwt_token>
-
-    Args:
-        days: Number of days of workout data
-
-    Returns:
-        Workout data from WHOOP API
-    """
-    try:
-        # Convert string UUID to UUID type
-        user_uuid = UUID(current_user)
-
-        logger.info("🏋️‍♂️ Getting workout data", user_id=current_user, days=days)
-
-        end_date = datetime.now(timezone.utc)
-        start_date = end_date - timedelta(days=days)
-        start_iso = start_date.isoformat()
-        end_iso = end_date.isoformat()
-
-        # Convert UUID to string for API service
-        workout_collection = await whoop_client.get_workout_data(str(user_uuid), start_iso, end_iso, limit=10)
-
-        logger.info("✅ Workout data retrieved",
-                   user_id=current_user,
-                   records_count=len(workout_collection.records))
-
-        return {
-            "user_id": current_user,
-            "date_range": {
-                "start": start_date.isoformat(),
-                "end": end_date.isoformat(),
-                "days": days
-            },
-            "workout_data": [w.model_dump() if hasattr(w, 'model_dump') else w for w in workout_collection.records],
-            "summary": {
-                "workout_records": len(workout_collection.records),
-                "has_next_page": bool(workout_collection.next_token)
-            },
-            "retrieved_at": datetime.utcnow().isoformat()
-        }
-
-    except ValueError as e:
-        logger.error("Invalid UUID format", user_id=current_user, error=str(e))
-        raise HTTPException(status_code=400, detail="Invalid user ID format")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("❌ Failed to get workout data", user_id=current_user, error=str(e))
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve workout data: {str(e)}"
-        )
+# @router.get("/data/recovery")
+# @router.get("/data/sleep")
+# @router.get("/data/workouts")
 
 
 
@@ -329,6 +148,36 @@ async def sync_user_data(
     try:
         # Convert string UUID to UUID type
         user_uuid = UUID(current_user)
+
+        # SYNC GUARD: Check if user has active WHOOP connection
+        from app.services.oauth_service import WhoopOAuthService
+        oauth_service = WhoopOAuthService()
+
+        connection_status = await oauth_service.get_connection_status(str(user_uuid))
+
+        if not connection_status.get("connected"):
+            logger.warning("⚠️ Sync blocked - user not connected", user_id=current_user)
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "WHOOP connection required",
+                    "message": "Please reconnect your WHOOP account to sync new data.",
+                    "status": connection_status.get("status", "not_connected"),
+                    "action": "Use POST /api/v1/auth/login to reconnect"
+                }
+            )
+
+        if not connection_status.get("token_valid"):
+            logger.warning("⚠️ Sync blocked - token expired", user_id=current_user)
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "WHOOP token expired",
+                    "message": "Your WHOOP connection has expired. Please reconnect to sync new data.",
+                    "status": "token_expired",
+                    "action": "Use POST /api/v1/auth/login to reconnect"
+                }
+            )
 
         logger.info("🔄 Starting data sync",
                    user_id=current_user,
@@ -613,3 +462,268 @@ def _merge_data_sources(db_data: dict, api_data: dict) -> dict:
             "database_data": db_data,
             "api_data": api_data
         }
+
+
+# =============================================================================
+# Individual Data Type Fetch Endpoints
+# =============================================================================
+
+@router.get("/data/sleep")
+async def get_sleep_data(
+    current_user: str = Depends(get_current_user),
+    start_date: Optional[str] = Query(None, description="Start date (ISO format: YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (ISO format: YYYY-MM-DD)"),
+    limit: int = Query(1, ge=1, le=100, description="Number of records to return")
+):
+    """
+    Get sleep data for authenticated user
+
+    - By default: Returns latest sleep record
+    - With date range: Returns all sleep records within the range
+
+    Returns raw_data structure from WHOOP API
+    """
+    try:
+        user_uuid = UUID(current_user)
+        from app.repositories.whoop_data_repository import WhoopDataRepository
+        from app.db.supabase_client import get_supabase
+
+        supabase = get_supabase()
+        repo = WhoopDataRepository(supabase.get_client())
+
+        # Check if user has active WHOOP connection
+        user_check = repo.db.table('whoop_users').select('is_active').eq('user_id', str(user_uuid)).execute()
+        if not user_check.data or not user_check.data[0].get('is_active', False):
+            raise HTTPException(
+                status_code=403,
+                detail="WHOOP connection not active. Please connect your WHOOP device first."
+            )
+
+        # Build query
+        query = repo.db.table('whoop_sleep').select('*').eq('user_id', str(user_uuid))
+
+        # Apply date filters if provided
+        if start_date:
+            query = query.gte('created_at', f"{start_date}T00:00:00")
+        if end_date:
+            query = query.lte('created_at', f"{end_date}T23:59:59")
+
+        # Order by most recent and limit
+        query = query.order('created_at', desc=True).limit(limit)
+
+        result = query.execute()
+
+        # Extract raw_data from each record
+        sleep_records = [record.get('raw_data', {}) for record in result.data if record.get('raw_data')]
+
+        return {
+            "data_type": "sleep",
+            "count": len(sleep_records),
+            "records": sleep_records,
+            "user_id": current_user,
+            "filters": {
+                "start_date": start_date,
+                "end_date": end_date,
+                "limit": limit
+            }
+        }
+
+    except HTTPException:
+        # Re-raise HTTPException as-is (includes 403 for inactive connection)
+        raise
+    except Exception as e:
+        logger.error("❌ Failed to get sleep data", user_id=current_user, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to fetch sleep data: {str(e)}")
+
+
+@router.get("/data/workout")
+async def get_workout_data(
+    current_user: str = Depends(get_current_user),
+    start_date: Optional[str] = Query(None, description="Start date (ISO format: YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (ISO format: YYYY-MM-DD)"),
+    limit: int = Query(1, ge=1, le=100, description="Number of records to return")
+):
+    """
+    Get workout data for authenticated user
+
+    - By default: Returns latest workout record
+    - With date range: Returns all workout records within the range
+
+    Returns raw_data structure from WHOOP API
+    """
+    try:
+        user_uuid = UUID(current_user)
+        from app.repositories.whoop_data_repository import WhoopDataRepository
+        from app.db.supabase_client import get_supabase
+
+        supabase = get_supabase()
+        repo = WhoopDataRepository(supabase.get_client())
+
+        # Build query
+        query = repo.db.table('whoop_workout').select('*').eq('user_id', str(user_uuid))
+
+        # Apply date filters if provided
+        if start_date:
+            query = query.gte('created_at', f"{start_date}T00:00:00")
+        if end_date:
+            query = query.lte('created_at', f"{end_date}T23:59:59")
+
+        # Order by most recent and limit
+        query = query.order('created_at', desc=True).limit(limit)
+
+        result = query.execute()
+
+        # Extract raw_data from each record
+        workout_records = [record.get('raw_data', {}) for record in result.data if record.get('raw_data')]
+
+        return {
+            "data_type": "workout",
+            "count": len(workout_records),
+            "records": workout_records,
+            "user_id": current_user,
+            "filters": {
+                "start_date": start_date,
+                "end_date": end_date,
+                "limit": limit
+            }
+        }
+
+    except Exception as e:
+        logger.error("❌ Failed to get workout data", user_id=current_user, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to fetch workout data: {str(e)}")
+
+
+@router.get("/data/recovery")
+async def get_recovery_data(
+    current_user: str = Depends(get_current_user),
+    start_date: Optional[str] = Query(None, description="Start date (ISO format: YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (ISO format: YYYY-MM-DD)"),
+    limit: int = Query(1, ge=1, le=100, description="Number of records to return")
+):
+    """
+    Get recovery data for authenticated user
+
+    - By default: Returns latest recovery record
+    - With date range: Returns all recovery records within the range
+
+    Returns raw_data structure from WHOOP API
+    """
+    try:
+        user_uuid = UUID(current_user)
+        from app.repositories.whoop_data_repository import WhoopDataRepository
+        from app.db.supabase_client import get_supabase
+
+        supabase = get_supabase()
+        repo = WhoopDataRepository(supabase.get_client())
+
+        # Check if user has active WHOOP connection
+        user_check = repo.db.table('whoop_users').select('is_active').eq('user_id', str(user_uuid)).execute()
+        if not user_check.data or not user_check.data[0].get('is_active', False):
+            raise HTTPException(
+                status_code=403,
+                detail="WHOOP connection not active. Please connect your WHOOP device first."
+            )
+
+        # Build query
+        query = repo.db.table('whoop_recovery').select('*').eq('user_id', str(user_uuid))
+
+        # Apply date filters if provided
+        if start_date:
+            query = query.gte('created_at', f"{start_date}T00:00:00")
+        if end_date:
+            query = query.lte('created_at', f"{end_date}T23:59:59")
+
+        # Order by most recent and limit
+        query = query.order('created_at', desc=True).limit(limit)
+
+        result = query.execute()
+
+        # Extract raw_data from each record
+        recovery_records = [record.get('raw_data', {}) for record in result.data if record.get('raw_data')]
+
+        return {
+            "data_type": "recovery",
+            "count": len(recovery_records),
+            "records": recovery_records,
+            "user_id": current_user,
+            "filters": {
+                "start_date": start_date,
+                "end_date": end_date,
+                "limit": limit
+            }
+        }
+
+    except HTTPException:
+        # Re-raise HTTPException as-is (includes 403 for inactive connection)
+        raise
+    except Exception as e:
+        logger.error("❌ Failed to get recovery data", user_id=current_user, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to fetch recovery data: {str(e)}")
+
+
+@router.get("/data/cycle")
+async def get_cycle_data(
+    current_user: str = Depends(get_current_user),
+    start_date: Optional[str] = Query(None, description="Start date (ISO format: YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (ISO format: YYYY-MM-DD)"),
+    limit: int = Query(1, ge=1, le=100, description="Number of records to return")
+):
+    """
+    Get cycle data for authenticated user
+
+    - By default: Returns latest cycle record
+    - With date range: Returns all cycle records within the range
+
+    Returns raw_data structure from WHOOP API
+    """
+    try:
+        user_uuid = UUID(current_user)
+        from app.repositories.whoop_data_repository import WhoopDataRepository
+        from app.db.supabase_client import get_supabase
+
+        supabase = get_supabase()
+        repo = WhoopDataRepository(supabase.get_client())
+
+        # Check if user has active WHOOP connection
+        user_check = repo.db.table('whoop_users').select('is_active').eq('user_id', str(user_uuid)).execute()
+        if not user_check.data or not user_check.data[0].get('is_active', False):
+            raise HTTPException(
+                status_code=403,
+                detail="WHOOP connection not active. Please connect your WHOOP device first."
+            )
+
+        # Build query
+        query = repo.db.table('whoop_cycle').select('*').eq('user_id', str(user_uuid))
+
+        # Apply date filters if provided
+        if start_date:
+            query = query.gte('created_at', f"{start_date}T00:00:00")
+        if end_date:
+            query = query.lte('created_at', f"{end_date}T23:59:59")
+
+        # Order by most recent and limit
+        query = query.order('created_at', desc=True).limit(limit)
+
+        result = query.execute()
+
+        # Extract raw_data from each record
+        cycle_records = [record.get('raw_data', {}) for record in result.data if record.get('raw_data')]
+
+        return {
+            "data_type": "cycle",
+            "count": len(cycle_records),
+            "records": cycle_records,
+            "user_id": current_user,
+            "filters": {
+                "start_date": start_date,
+                "end_date": end_date,
+                "limit": limit
+            }
+        }
+
+    except HTTPException:
+        # Re-raise HTTPException as-is (includes 403 for inactive connection)
+        raise
+    except Exception as e:
+        logger.error("❌ Failed to get cycle data", user_id=current_user, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to fetch cycle data: {str(e)}")

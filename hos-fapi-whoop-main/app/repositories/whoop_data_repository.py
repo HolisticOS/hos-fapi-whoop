@@ -95,9 +95,11 @@ class WhoopDataRepository:
                     """Convert float to int, return None if value is None"""
                     return int(value) if value is not None else None
 
+                # WHOOP v2 recovery API uses 'sleep_id' as the unique identifier, not 'id'
                 data = {
-                    'id': record.get('id'),
+                    'id': record.get('sleep_id'),  # Use sleep_id as the primary key
                     'user_id': user_id_str,
+                    # Note: cycle_id is stored in raw_data but not in a separate column
                     'recovery_score': record.get('score', {}).get('recovery_score'),
                     'hrv_rmssd_milli': record.get('score', {}).get('hrv_rmssd_milli'),
                     'resting_heart_rate': safe_int(record.get('score', {}).get('resting_heart_rate')),
@@ -106,7 +108,7 @@ class WhoopDataRepository:
                     'calibration_state': record.get('score', {}).get('state'),
                     'created_at': record.get('created_at'),
                     'updated_at': record.get('updated_at'),
-                    'raw_data': record  # Store complete response
+                    'raw_data': record  # Store complete response (includes cycle_id)
                 }
 
                 # Upsert: insert or skip if ID exists

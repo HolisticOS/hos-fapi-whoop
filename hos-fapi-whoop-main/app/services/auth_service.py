@@ -1,7 +1,6 @@
 """
 WHOOP OAuth 2.0 Authentication Service
 Handles user sign-in, token storage, and automated token refresh
-Integrates with Supabase authentication (UUID-based user_id)
 """
 
 import secrets
@@ -10,7 +9,6 @@ import hashlib
 import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
-from uuid import UUID
 import httpx
 import structlog
 
@@ -33,12 +31,14 @@ class WhoopAuthService:
         self.token_url = "https://api.prod.whoop.com/oauth/oauth2/token"
         
         # Complete scopes for all WHOOP data access
+        # Based on approved scopes from WHOOP Developer Dashboard
         self.scopes = [
             "read:profile",
             "read:recovery",
             "read:sleep",
-            "read:workout",  # Singular (WHOOP API v2 requirement)
+            "read:workout",  # FIXED: singular form (as approved by WHOOP)
             "read:cycles",
+            "read:body_measurement",  # Added from approved scopes
             "offline"
         ]
     
@@ -54,34 +54,28 @@ class WhoopAuthService:
         
         return code_verifier, code_challenge
     
-    async def initiate_oauth(self, supabase_user_id: UUID) -> Dict[str, str]:
+    async def initiate_oauth(self, user_id: str) -> Dict[str, str]:
         """
-        Start OAuth flow for a Supabase authenticated user
+        Start OAuth flow for a user
         Returns authorization URL and stores state in database
-
-        Args:
-            supabase_user_id: UUID from Supabase auth.users.id (from JWT token)
         """
         try:
             # Generate PKCE pair and state
             code_verifier, code_challenge = self.generate_pkce_pair()
             state = secrets.token_urlsafe(32)
-
-            # Convert UUID to string for database storage
-            user_id_str = str(supabase_user_id)
-
+            
             # Store OAuth state in database (temporary)
             oauth_state = {
-                'user_id': user_id_str,  # Supabase UUID
+                'user_id': user_id,
                 'state': state,
                 'code_verifier': code_verifier,
                 'created_at': datetime.now(timezone.utc).isoformat(),
                 'expires_at': (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
             }
-
-            # Store in whoop_oauth_states table
+            
+            # Store in whoop_oauth_states table (we'll create this)
             result = self.supabase.table('whoop_oauth_states').insert(oauth_state).execute()
-
+            
             # Build authorization URL
             auth_params = {
                 'client_id': self.client_id,
@@ -92,39 +86,36 @@ class WhoopAuthService:
                 'code_challenge': code_challenge,
                 'code_challenge_method': 'S256'
             }
-
+            
             import urllib.parse
             auth_url = f"{self.auth_url}?{urllib.parse.urlencode(auth_params)}"
-
-            logger.info("OAuth flow initiated", supabase_user_id=supabase_user_id, state=state)
-
+            
+            logger.info("OAuth flow initiated", user_id=user_id, state=state)
+            
             return {
                 'auth_url': auth_url,
                 'state': state
             }
-
+            
         except Exception as e:
-            logger.error("Failed to initiate OAuth", supabase_user_id=supabase_user_id, error=str(e))
+            logger.error("Failed to initiate OAuth", user_id=user_id, error=str(e))
             raise
     
     async def handle_callback(self, code: str, state: str) -> Dict[str, Any]:
         """
-        Handle OAuth callback, exchange code for tokens, and link WHOOP account to Supabase user
-
-        Returns:
-            Dict with supabase_user_id (UUID) and whoop_user_id
+        Handle OAuth callback and exchange code for tokens
         """
         try:
             # Verify state and get stored OAuth data
             oauth_data = self.supabase.table('whoop_oauth_states').select('*').eq('state', state).execute()
-
+            
             if not oauth_data.data:
                 raise ValueError("Invalid or expired OAuth state")
-
+            
             oauth_record = oauth_data.data[0]
-            supabase_user_id = oauth_record['user_id']  # UUID string from Supabase auth
+            user_id = oauth_record['user_id']
             code_verifier = oauth_record['code_verifier']
-
+            
             # Exchange authorization code for tokens
             token_data = {
                 'grant_type': 'authorization_code',
@@ -134,79 +125,53 @@ class WhoopAuthService:
                 'redirect_uri': self.redirect_uri,
                 'code_verifier': code_verifier
             }
-
+            
             async with httpx.AsyncClient() as client:
-                # Get tokens
                 response = await client.post(
                     self.token_url,
                     data=token_data,
                     headers={'Content-Type': 'application/x-www-form-urlencoded'}
                 )
-
+            
             if response.status_code != 200:
                 raise ValueError(f"Token exchange failed: {response.text}")
-
+            
             tokens = response.json()
-            access_token = tokens['access_token']
-
-            # Fetch WHOOP user profile to get whoop_user_id
-            async with httpx.AsyncClient() as client:
-                profile_response = await client.get(
-                    'https://api.prod.whoop.com/developer/v1/user/profile/basic',
-                    headers={'Authorization': f'Bearer {access_token}'}
-                )
-
-            if profile_response.status_code != 200:
-                raise ValueError(f"Failed to fetch WHOOP profile: {profile_response.text}")
-
-            profile = profile_response.json()
-            whoop_user_id = str(profile.get('user_id'))  # WHOOP's user ID
-
-            # Store tokens linking Supabase UUID to WHOOP user ID
-            await self.store_user_tokens(supabase_user_id, whoop_user_id, tokens)
-
+            
+            # Store tokens in database
+            await self.store_user_tokens(user_id, tokens)
+            
             # Clean up OAuth state
             self.supabase.table('whoop_oauth_states').delete().eq('state', state).execute()
-
-            logger.info("OAuth callback handled successfully",
-                       supabase_user_id=supabase_user_id,
-                       whoop_user_id=whoop_user_id)
-
+            
+            logger.info("OAuth callback handled successfully", user_id=user_id)
+            
             return {
-                'supabase_user_id': supabase_user_id,
-                'whoop_user_id': whoop_user_id,
+                'user_id': user_id,
                 'success': True,
-                'message': 'WHOOP account linked successfully'
+                'message': 'Authentication successful'
             }
-
+            
         except Exception as e:
             logger.error("OAuth callback failed", state=state, error=str(e))
             raise
     
-    async def store_user_tokens(self, supabase_user_id: str, whoop_user_id: str, tokens: Dict[str, Any]) -> None:
-        """
-        Store or update WHOOP tokens linked to Supabase user
-
-        Args:
-            supabase_user_id: UUID from Supabase auth.users.id (as string)
-            whoop_user_id: User ID from WHOOP API
-            tokens: OAuth tokens from WHOOP
-        """
+    async def store_user_tokens(self, user_id: str, tokens: Dict[str, Any]) -> None:
+        """Store or update user tokens in database"""
         try:
             access_token = tokens['access_token']
             refresh_token = tokens.get('refresh_token')
             expires_in = tokens.get('expires_in', 3600)
-
+            
             # Calculate expiry time (timezone-aware)
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-
-            # Check if Supabase user already has a linked WHOOP account
-            existing_user = self.supabase.table('whoop_users').select('*').eq('user_id', supabase_user_id).execute()
+            
+            # Check if user already exists (by user_id which is Supabase auth user ID)
+            existing_user = self.supabase.table('whoop_users').select('*').eq('user_id', user_id).execute()
 
             if existing_user.data:
-                # Update existing WHOOP linkage
+                # Update existing user
                 update_data = {
-                    'whoop_user_id': whoop_user_id,  # Update in case user linked different WHOOP account
                     'access_token': access_token,
                     'refresh_token': refresh_token,
                     'token_expires_at': expires_at.isoformat(),
@@ -214,15 +179,30 @@ class WhoopAuthService:
                     'updated_at': datetime.now(timezone.utc).isoformat()
                 }
 
-                result = self.supabase.table('whoop_users').update(update_data).eq('user_id', supabase_user_id).execute()
-                logger.info("WHOOP tokens updated",
-                           supabase_user_id=supabase_user_id,
-                           whoop_user_id=whoop_user_id)
+                result = self.supabase.table('whoop_users').update(update_data).eq('user_id', user_id).execute()
+                logger.info("User tokens updated", user_id=user_id)
             else:
-                # Create new WHOOP linkage for Supabase user
+                # Create new user - use the Supabase auth user_id
+                # Note: user_id here is the Supabase auth user ID, whoop_user_id will be fetched from WHOOP API later if needed
+
+                # First, ensure the user exists in the users table (if there's a foreign key constraint)
+                try:
+                    # Check if user exists in users table
+                    users_check = self.supabase.table('users').select('id').eq('id', user_id).execute()
+                    if not users_check.data:
+                        # Create user record if it doesn't exist
+                        self.supabase.table('users').insert({
+                            'id': user_id,
+                            'created_at': datetime.now(timezone.utc).isoformat()
+                        }).execute()
+                        logger.info("Created user record in users table", user_id=user_id)
+                except Exception as e:
+                    # If users table doesn't exist or doesn't have FK constraint, ignore
+                    logger.warning("Could not create user record in users table", user_id=user_id, error=str(e))
+
                 user_data = {
-                    'user_id': supabase_user_id,  # Supabase UUID (foreign key to auth.users.id)
-                    'whoop_user_id': whoop_user_id,  # WHOOP's user ID
+                    'user_id': user_id,  # Use Supabase auth user ID
+                    'whoop_user_id': None,  # Will be populated from WHOOP API profile if needed
                     'access_token': access_token,
                     'refresh_token': refresh_token,
                     'token_expires_at': expires_at.isoformat(),
@@ -232,45 +212,26 @@ class WhoopAuthService:
                 }
 
                 result = self.supabase.table('whoop_users').insert(user_data).execute()
-                logger.info("WHOOP account linked to Supabase user",
-                           supabase_user_id=supabase_user_id,
-                           whoop_user_id=whoop_user_id)
-
-            logger.info("User tokens stored successfully",
-                       supabase_user_id=supabase_user_id,
-                       whoop_user_id=whoop_user_id)
-
+                logger.info("New user created in whoop_users", user_id=user_id)
+            
+            logger.info("User tokens stored", user_id=user_id)
+            
         except Exception as e:
-            logger.error("Failed to store user tokens",
-                        supabase_user_id=supabase_user_id,
-                        whoop_user_id=whoop_user_id,
-                        error=str(e))
+            logger.error("Failed to store user tokens", user_id=user_id, error=str(e))
             raise
     
-    async def get_valid_token(self, supabase_user_id: UUID) -> Optional[str]:
-        """
-        Get a valid WHOOP access token for Supabase user (refresh if needed)
-
-        Args:
-            supabase_user_id: UUID from Supabase auth.users.id
-
-        Returns:
-            Valid WHOOP access token or None if not linked/expired
-        """
+    async def get_valid_token(self, user_id: str) -> Optional[str]:
+        """Get a valid access token for user (refresh if needed)"""
         try:
-            # Convert UUID to string
-            user_id_str = str(supabase_user_id)
-
-            # Get user from database using Supabase user_id
-            user_data = self.supabase.table('whoop_users').select('*').eq('user_id', user_id_str).execute()
-
+            # Get user from database (by user_id which is Supabase auth user ID)
+            user_data = self.supabase.table('whoop_users').select('*').eq('user_id', user_id).execute()
+            
             if not user_data.data:
-                logger.warning("WHOOP account not linked", supabase_user_id=supabase_user_id)
+                logger.warning("User not found", user_id=user_id)
                 return None
-
+            
             user = user_data.data[0]
-            whoop_user_id = user['whoop_user_id']
-
+            
             # Check if token is still valid
             expires_at_str = user['token_expires_at']
             if isinstance(expires_at_str, str):
@@ -283,25 +244,24 @@ class WhoopAuthService:
                 expires_at = expires_at_str
                 if expires_at.tzinfo is None:
                     expires_at = expires_at.replace(tzinfo=timezone.utc)
-
+            
             if datetime.now(timezone.utc) < expires_at - timedelta(minutes=5):  # 5-minute buffer
-                logger.info("Using cached token", supabase_user_id=supabase_user_id)
                 return user['access_token']
-
+            
             # Token expired, try to refresh
             if user['refresh_token']:
-                logger.info("Refreshing expired token", supabase_user_id=supabase_user_id)
+                logger.info("Refreshing expired token", user_id=user_id)
                 new_tokens = await self.refresh_token(user['refresh_token'])
-
+                
                 if new_tokens:
-                    await self.store_user_tokens(user_id_str, whoop_user_id, new_tokens)
+                    await self.store_user_tokens(user_id, new_tokens)
                     return new_tokens['access_token']
-
-            logger.warning("Cannot refresh token", supabase_user_id=supabase_user_id)
+            
+            logger.warning("Cannot refresh token", user_id=user_id)
             return None
-
+            
         except Exception as e:
-            logger.error("Failed to get valid token", supabase_user_id=supabase_user_id, error=str(e))
+            logger.error("Failed to get valid token", user_id=user_id, error=str(e))
             return None
     
     async def refresh_token(self, refresh_token: str) -> Optional[Dict[str, Any]]:
@@ -331,22 +291,13 @@ class WhoopAuthService:
             logger.error("Token refresh error", error=str(e))
             return None
     
-    async def get_user_info(self, supabase_user_id: UUID) -> Optional[Dict[str, Any]]:
-        """
-        Get WHOOP authentication status and info for Supabase user
-
-        Args:
-            supabase_user_id: UUID from Supabase auth.users.id
-
-        Returns:
-            Dict with authentication status or None if not linked
-        """
+    async def get_user_info(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get user authentication status and info"""
         try:
-            user_id_str = str(supabase_user_id)
-            user_data = self.supabase.table('whoop_users').select('*').eq('user_id', user_id_str).execute()
+            # Query by user_id (Supabase auth user ID)
+            user_data = self.supabase.table('whoop_users').select('*').eq('user_id', user_id).execute()
 
             if not user_data.data:
-                logger.info("WHOOP account not linked", supabase_user_id=supabase_user_id)
                 return None
 
             user = user_data.data[0]
@@ -360,22 +311,21 @@ class WhoopAuthService:
                         expires_at_str = expires_at_str.replace('Z', '+00:00')
                     expires_at = datetime.fromisoformat(expires_at_str)
                     if expires_at.tzinfo is None:
-                        expires_at = expires_at.replace(tzinfo=timezone.utc)
+                        expires_at = expires_at.replace(tzinfo=datetime.now().astimezone().tzinfo)
                 else:
                     # It's already a datetime object from Supabase
                     expires_at = expires_at_str
-                    if expires_at.tzinfo is None:
-                        expires_at = expires_at.replace(tzinfo=timezone.utc)
 
                 # Compare with timezone-aware current time
                 current_time = datetime.now(timezone.utc)
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
                 is_expired = current_time > expires_at
             else:
                 is_expired = True
 
             return {
-                'supabase_user_id': user_id_str,
-                'whoop_user_id': user.get('whoop_user_id'),
+                'user_id': user_id,
                 'is_authenticated': bool(user.get('access_token')) and user['is_active'],
                 'token_expires_at': user['token_expires_at'],
                 'is_token_expired': is_expired,
@@ -384,5 +334,44 @@ class WhoopAuthService:
             }
 
         except Exception as e:
-            logger.error("Failed to get user info", supabase_user_id=supabase_user_id, error=str(e))
+            logger.error("Failed to get user info", user_id=user_id, error=str(e))
             return None
+
+    async def disconnect_user(self, user_id: str) -> Dict[str, Any]:
+        """
+        Disconnect a user and deactivate their WHOOP integration
+        Sets is_active to False and optionally clears tokens
+        """
+        try:
+            # Check if user exists (query by user_id which is the Supabase UUID)
+            user_data = self.supabase.table('whoop_users').select('*').eq('user_id', user_id).execute()
+
+            if not user_data.data:
+                logger.warning("User not found for disconnect", user_id=user_id)
+                return {
+                    'success': False,
+                    'message': 'User not found',
+                    'user_id': user_id
+                }
+
+            # Update user - set is_active to False
+            # Note: We keep the tokens in the database but mark the connection as inactive
+            # The is_active check in data endpoints prevents access even with valid tokens
+            update_data = {
+                'is_active': False,
+                'updated_at': datetime.now(timezone.utc).isoformat()
+            }
+
+            result = self.supabase.table('whoop_users').update(update_data).eq('user_id', user_id).execute()
+
+            logger.info("User disconnected successfully", user_id=user_id)
+
+            return {
+                'success': True,
+                'message': 'User disconnected successfully',
+                'user_id': user_id
+            }
+
+        except Exception as e:
+            logger.error("Failed to disconnect user", user_id=user_id, error=str(e))
+            raise
