@@ -58,7 +58,16 @@ class Settings:
     
     # Service-to-Service Authentication
     SERVICE_API_KEY: str = os.getenv("SERVICE_API_KEY", "")
-    
+
+    # Gemini AI Settings
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")  # Fast model for insights
+    GEMINI_TEMPERATURE: float = float(os.getenv("GEMINI_TEMPERATURE", "0.7"))
+    GEMINI_MAX_OUTPUT_TOKENS: int = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "2048"))
+
+    # Insights Cache TTL (1 hour - insights don't change frequently)
+    CACHE_TTL_INSIGHTS: int = int(os.getenv("CACHE_TTL_INSIGHTS", "3600"))
+
     @property
     def is_development(self) -> bool:
         return self.ENVIRONMENT == "development"

@@ -11,7 +11,9 @@ from uuid import UUID
 import structlog
 
 from app.services.whoop_service import WhoopAPIService
+from app.services.insights_service import WhoopInsightsService
 from app.models.database import WhoopDataService
+from app.models.schemas import WhoopInsightsResponse
 from app.core.auth import get_current_user
 
 logger = structlog.get_logger(__name__)
@@ -20,6 +22,7 @@ router = APIRouter()
 # Initialize services
 whoop_client = WhoopAPIService()
 data_service = WhoopDataService()
+insights_service = WhoopInsightsService()
 
 
 @router.get("/health-metrics")
@@ -727,3 +730,72 @@ async def get_cycle_data(
     except Exception as e:
         logger.error("❌ Failed to get cycle data", user_id=current_user, error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to fetch cycle data: {str(e)}")
+
+
+@router.get("/data/insights", response_model=WhoopInsightsResponse)
+async def get_health_insights(
+    current_user: str = Depends(get_current_user),
+    days_back: int = Query(7, ge=1, le=30, description="Days of historical data to analyze (1-30)")
+):
+    """
+    Generate AI-powered health insights from WHOOP data using Gemini 2.5 Flash
+
+    Analyzes recovery, sleep, cycle, and workout data to provide:
+    - Key insights about health patterns
+    - Overall health summary
+    - Actionable recommendations
+    - Trend analysis (improving/declining/stable)
+
+    Requires:
+        Authorization: Bearer <supabase_jwt_token>
+        GEMINI_API_KEY: Set in environment variables
+
+    Args:
+        days_back: Number of days to analyze (default: 7, max: 30)
+
+    Returns:
+        AI-generated insights with trends and recommendations
+
+    Example:
+        GET /api/v1/data/insights?days_back=7
+    """
+    try:
+        # Convert string UUID to UUID type
+        user_uuid = UUID(current_user)
+
+        logger.info(
+            "🤖 Generating health insights",
+            user_id=current_user,
+            days_back=days_back
+        )
+
+        # Generate insights using Gemini
+        insights = await insights_service.generate_insights(
+            user_id=user_uuid,
+            days_back=days_back
+        )
+
+        logger.info(
+            "✅ Health insights generated",
+            user_id=current_user,
+            insights_count=len(insights["insights"]),
+            data_quality=insights["data_quality"]
+        )
+
+        return insights
+
+    except HTTPException:
+        # Re-raise HTTPException as-is
+        raise
+    except ValueError as e:
+        logger.error("❌ Invalid user ID or configuration", user_id=current_user, error=str(e))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid request: {str(e)}. Ensure GEMINI_API_KEY is configured."
+        )
+    except Exception as e:
+        logger.error("❌ Failed to generate insights", user_id=current_user, error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate insights: {str(e)}"
+        )

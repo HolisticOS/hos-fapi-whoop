@@ -24,6 +24,9 @@ cachetools>=5.3.0
 # Logging
 structlog>=23.0.0
 
+# AI/ML
+google-genai>=0.8.0
+
 # Development/Testing
 pytest>=7.4.0
 pytest-asyncio>=0.21.0

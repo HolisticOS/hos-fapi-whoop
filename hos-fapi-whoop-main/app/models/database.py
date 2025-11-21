@@ -487,6 +487,16 @@ class WhoopDataService:
         self.recovery = WhoopRecoveryRepository()
         self.migration = WhoopMigrationRepository()
     
+    async def get_comprehensive_health_data(self, user_id: str, start_date: date, 
+                                            end_date: date) -> Dict[str, Any]:
+        """
+        Backwards-compatible alias for comprehensive data fetch.
+        
+        This keeps older callers working while the new v2 method name
+        remains `get_comprehensive_data`.
+        """
+        return await self.get_comprehensive_data(user_id, start_date, end_date)
+    
     async def store_comprehensive_data(self, user_id: str, response) -> Dict[str, Any]:
         """
         Store comprehensive health data

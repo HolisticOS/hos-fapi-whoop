@@ -459,6 +459,71 @@ class WhoopWebhookEvent(BaseModel):
         
         return model
 
+
+# =============================================================================
+# AI Insights Models (Gemini-powered)
+# =============================================================================
+
+class WhoopInsightsTrends(BaseModel):
+    """Trends identified in WHOOP health data"""
+    recovery: str = Field(..., description="Recovery trend: improving|declining|stable")
+    sleep: str = Field(..., description="Sleep trend: improving|declining|stable")
+    strain: str = Field(..., description="Strain trend: improving|declining|stable")
+    overall: str = Field(..., description="Overall trend description")
+
+
+class WhoopInsightsDateRange(BaseModel):
+    """Date range for insights analysis"""
+    start: str = Field(..., description="Start date (ISO format)")
+    end: str = Field(..., description="End date (ISO format)")
+    days: int = Field(..., description="Number of days analyzed")
+
+
+class WhoopInsightsResponse(BaseModel):
+    """Response model for AI-generated WHOOP insights"""
+    user_id: str = Field(..., description="User UUID")
+    date_range: WhoopInsightsDateRange = Field(..., description="Analysis date range")
+    insights: List[str] = Field(..., description="List of key insights from data analysis")
+    summary: str = Field(..., description="Overall health summary (2-3 sentences)")
+    recommendations: List[str] = Field(..., description="Actionable recommendations for improvement")
+    trends: WhoopInsightsTrends = Field(..., description="Identified health trends")
+    generated_at: str = Field(..., description="Timestamp when insights were generated (ISO format)")
+    data_quality: str = Field(..., description="Data quality assessment: excellent|good|fair|limited|insufficient")
+    model: str = Field(..., description="AI model used for generation (e.g., gemini-2.5-flash)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "a57f70b4-d0a4-4aef-b721-a4b526f64869",
+                "date_range": {
+                    "start": "2025-11-14",
+                    "end": "2025-11-21",
+                    "days": 7
+                },
+                "insights": [
+                    "Your recovery scores are consistently above 70%, indicating strong adaptation to training load",
+                    "Sleep efficiency has improved from 85% to 92% over the past week",
+                    "HRV shows a positive upward trend, suggesting reduced stress and improved recovery"
+                ],
+                "summary": "Overall health metrics are trending positively with strong recovery scores and improving sleep quality. Your body is adapting well to the current training load.",
+                "recommendations": [
+                    "Maintain current sleep schedule - consistency is paying off",
+                    "Consider a deload week if strain remains above 15 for more than 3 consecutive days",
+                    "Focus on maintaining HRV above 60ms through stress management techniques"
+                ],
+                "trends": {
+                    "recovery": "improving",
+                    "sleep": "improving",
+                    "strain": "stable",
+                    "overall": "Positive trajectory with strong recovery adaptation"
+                },
+                "generated_at": "2025-11-21T15:30:00Z",
+                "data_quality": "excellent",
+                "model": "gemini-2.5-flash"
+            }
+        }
+
+
 # Export all models
 __all__ = [
     # API Response Models
@@ -488,5 +553,10 @@ __all__ = [
     "WhoopDataResponse",
     
     # Webhook Models
-    "WhoopWebhookEvent"
+    "WhoopWebhookEvent",
+
+    # AI Insights Models
+    "WhoopInsightsResponse",
+    "WhoopInsightsTrends",
+    "WhoopInsightsDateRange"
 ]
