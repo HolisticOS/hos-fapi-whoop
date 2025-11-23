@@ -1,10 +1,11 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import structlog
 
 from app.config.settings import settings
 from app.config.database import init_database, close_database
-from app.api import internal, auth, health, raw_data
+from app.api import internal, auth, health, raw_data, smart_sync
+from app.core.auth import get_current_user
 
 # Configure structured logging
 structlog.configure(
@@ -40,6 +41,12 @@ app.include_router(health.router, prefix="/health")
 app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/whoop/auth", tags=["whoop-auth"])
 app.include_router(internal.router, prefix=settings.API_V1_STR, tags=["whoop-data"])
 app.include_router(raw_data.router, prefix="", tags=["raw-data"])
+app.include_router(
+    smart_sync.router,
+    prefix=f"{settings.API_V1_STR}/smart",
+    tags=["smart-sync"],
+    dependencies=[Depends(get_current_user)]
+)
 
 @app.on_event("startup")
 async def startup_event():
