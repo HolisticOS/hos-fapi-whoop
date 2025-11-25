@@ -156,16 +156,53 @@ class WhoopAuthService:
             logger.error("OAuth callback failed", state=state, error=str(e))
             raise
     
+    async def _fetch_whoop_user_profile(self, access_token: str) -> Optional[str]:
+        """Fetch user profile from WHOOP API to get real user ID"""
+        try:
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            }
+
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    "https://api.prod.whoop.com/developer/v1/user/profile/basic",
+                    headers=headers,
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    profile_data = response.json()
+                    whoop_user_id = str(profile_data.get('user_id'))
+                    logger.info("WHOOP user profile fetched successfully", whoop_user_id=whoop_user_id)
+                    return whoop_user_id
+                else:
+                    logger.warning("Failed to fetch WHOOP user profile",
+                                 status=response.status_code,
+                                 response=response.text)
+                    return None
+
+        except Exception as e:
+            logger.error("Error fetching WHOOP user profile", error=str(e))
+            return None
+
     async def store_user_tokens(self, user_id: str, tokens: Dict[str, Any]) -> None:
         """Store or update user tokens in database"""
         try:
             access_token = tokens['access_token']
             refresh_token = tokens.get('refresh_token')
             expires_in = tokens.get('expires_in', 3600)
-            
+
             # Calculate expiry time (timezone-aware)
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-            
+
+            # Fetch the real WHOOP user ID from their API
+            whoop_user_id = await self._fetch_whoop_user_profile(access_token)
+            if not whoop_user_id:
+                # Use a fallback if we can't fetch the profile
+                whoop_user_id = f"pending_{user_id}"
+                logger.warning("Using fallback whoop_user_id", user_id=user_id, whoop_user_id=whoop_user_id)
+
             # Check if user already exists (by user_id which is Supabase auth user ID)
             existing_user = self.supabase.table('whoop_users').select('*').eq('user_id', user_id).execute()
 
@@ -175,34 +212,19 @@ class WhoopAuthService:
                     'access_token': access_token,
                     'refresh_token': refresh_token,
                     'token_expires_at': expires_at.isoformat(),
+                    'whoop_user_id': whoop_user_id,  # Update whoop_user_id in case it changed
                     'is_active': True,
                     'updated_at': datetime.now(timezone.utc).isoformat()
                 }
 
                 result = self.supabase.table('whoop_users').update(update_data).eq('user_id', user_id).execute()
-                logger.info("User tokens updated", user_id=user_id)
+                logger.info("User tokens updated", user_id=user_id, whoop_user_id=whoop_user_id)
             else:
                 # Create new user - use the Supabase auth user_id
-                # Note: user_id here is the Supabase auth user ID, whoop_user_id will be fetched from WHOOP API later if needed
-
-                # First, ensure the user exists in the users table (if there's a foreign key constraint)
-                try:
-                    # Check if user exists in users table
-                    users_check = self.supabase.table('users').select('id').eq('id', user_id).execute()
-                    if not users_check.data:
-                        # Create user record if it doesn't exist
-                        self.supabase.table('users').insert({
-                            'id': user_id,
-                            'created_at': datetime.now(timezone.utc).isoformat()
-                        }).execute()
-                        logger.info("Created user record in users table", user_id=user_id)
-                except Exception as e:
-                    # If users table doesn't exist or doesn't have FK constraint, ignore
-                    logger.warning("Could not create user record in users table", user_id=user_id, error=str(e))
 
                 user_data = {
                     'user_id': user_id,  # Use Supabase auth user ID
-                    'whoop_user_id': None,  # Will be populated from WHOOP API profile if needed
+                    'whoop_user_id': whoop_user_id,  # Real WHOOP user ID from their API
                     'access_token': access_token,
                     'refresh_token': refresh_token,
                     'token_expires_at': expires_at.isoformat(),
@@ -212,7 +234,7 @@ class WhoopAuthService:
                 }
 
                 result = self.supabase.table('whoop_users').insert(user_data).execute()
-                logger.info("New user created in whoop_users", user_id=user_id)
+                logger.info("New user created in whoop_users", user_id=user_id, whoop_user_id=whoop_user_id)
             
             logger.info("User tokens stored", user_id=user_id)
             
