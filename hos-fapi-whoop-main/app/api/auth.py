@@ -16,13 +16,13 @@ router = APIRouter()
 auth_service = WhoopAuthService()
 
 @router.post("/login")
-async def initiate_login(user_id: str):
+async def initiate_login(user_id: str = Query(..., description="Your internal user identifier")):
     """
     Initiate WHOOP OAuth flow for a user
-    
+
     Args:
-        user_id: Your internal user identifier
-    
+        user_id: Your internal user identifier (passed as query parameter)
+
     Returns:
         Authorization URL for user to complete OAuth flow
     """
